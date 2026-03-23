@@ -1,0 +1,2176 @@
+---
+title: "Printlab - Base De Datos"
+author: "Endrys Mieles"
+date: "2026-03-23"
+output: html_document
+---
+
+## Base de Datos Relacional: Diseño, Visualización y Creación Física en 4 Motores
+
+---
+
+## ÍNDICE
+
+1. [Descripción del Sistema](#1-descripción-del-sistema)
+2. [Modelo Entidad-Relación](#2-modelo-entidad-relación)
+3. [Diccionario de Datos](#3-diccionario-de-datos)
+4. [MySQL — Editor, DBeaver y Workbench](#4-mysql)
+5. [PostgreSQL — Editor, DBeaver y PgAdmin 4](#5-postgresql)
+6. [MS SQL Server — Editor, DBeaver y SSMS](#6-ms-sql-server)
+7. [Oracle — Editor, DBeaver y SQL Developer](#7-oracle)
+8. [Tabla Comparativa entre Motores](#8-tabla-comparativa)
+
+---
+
+## 1. Descripción del Sistema
+
+| Elemento | Detalle |
+|---|---|
+| **Nombre** | PrintLab — Centro de copiado e impresión |
+| **Dominio** | Órdenes / Trabajos / Máquinas / Costeo |
+| **Objetivo** | Centralizar operación, controlar estados y trazabilidad, habilitar reporting por fechas y responsables |
+| **Usuarios** | Administrador, Operación, Supervisor, Auditor/Consulta |
+
+### Reglas de Negocio Implementadas
+
+- Toda transacción tiene campo `estado` y campos de auditoría (`creado_en`, `actualizado_en`).
+- No se permiten registros detalle sin su cabecera (integridad referencial obligatoria).
+- PK/FK en todas las tablas; UNIQUE y CHECK donde aplica.
+- Soporte de reportes por rangos de fechas (campos `fecha_*` indexados).
+- Cola de máquinas con control de solapamiento: una máquina no puede tener dos trabajos activos al mismo tiempo.
+- Estados controlados con CHECK: `ACTIVO`, `INACTIVO`, `PENDIENTE`, `EN_PROCESO`, `COMPLETADO`, `CANCELADO`, `PAGADO`, `ANULADO`.
+
+---
+
+## 2. Modelo Entidad-Relación
+
+### 2.1 Diagrama de Relaciones (Texto)
+
+```
+┌─────────────────┐           ┌─────────────────────┐
+│     CLIENTE     │           │       TRABAJO        │
+│─────────────────│           │─────────────────────│
+│ PK cliente_id   │◄─────────┤ FK cliente_id        │
+│    tipo_doc     │   1 : N   │ PK trabajo_id        │
+│    num_doc      │           │    nombre            │
+│    nombre       │           │    descripcion       │
+│    telefono     │           │    estado            │
+│    email        │           │    fecha_inicio      │
+│    estado       │           │    fecha_fin         │
+│    creado_en    │           │    creado_en         │
+└─────────────────┘           │    actualizado_en    │
+                              └──────────┬──────────┘
+                                         │ 1
+                                         │
+              ┌──────────────────────────┼──────────────────────────┐
+              │ N                        │ N                        │ 1
+              ▼                         ▼                          │
+┌─────────────────────┐   ┌─────────────────────┐                 │
+│   TRABAJO_SERVICIO  │   │   TRABAJO_ARCHIVO    │                 │
+│ (Tabla Pivote)      │   │ (Tabla Pivote)       │                 │
+│─────────────────────│   │─────────────────────│                 │
+│ PK ts_id            │   │ PK ta_id             │                 │
+│ FK trabajo_id       │   │ FK trabajo_id        │                 │
+│ FK servicio_id      │   │ FK archivo_id        │                 │
+│    cantidad         │   │    copias            │                 │
+│    precio_unit      │   │    instrucciones     │                 │
+│    subtotal         │   └─────────┬───────────┘                 │
+└──────────┬──────────┘             │ N                           │
+           │ N                      ▼                             │
+           ▼              ┌─────────────────┐                     │
+┌─────────────────┐       │    ARCHIVO      │                     │
+│    SERVICIO     │       │─────────────────│                     │
+│─────────────────│       │ PK archivo_id   │                     │
+│ PK servicio_id  │       │    nombre       │                     │
+│    nombre       │       │    extension    │                     │
+│    descripcion  │       │    ruta         │                     │
+│    precio_base  │       │    tamanio_kb   │                     │
+│    estado       │       │    estado       │                     │
+└─────────────────┘       │    creado_en    │                     │
+                          └─────────────────┘                     │
+                                                                   │
+┌─────────────────────┐           ┌──────────────────────┐        │
+│      MAQUINA        │           │    COLAMAQUINA       │◄───────┘
+│─────────────────────│           │──────────────────────│
+│ PK maquina_id       │◄─────────┤ FK maquina_id        │
+│    nombre           │   1 : N   │ PK cola_id           │
+│    descripcion      │           │ FK trabajo_id        │
+│    tipo             │           │    prioridad         │
+│    estado           │           │    estado            │
+│    creado_en        │           │    inicio_estimado   │
+└─────────────────────┘           │    fin_estimado      │
+                                  │    inicio_real       │
+                                  │    fin_real          │
+                                  │    creado_en         │
+                                  └──────────────────────┘
+
+┌──────────────────┐           ┌──────────────────────────┐
+│     FACTURA      │           │          PAGO            │
+│──────────────────│           │──────────────────────────│
+│ PK factura_id    │◄─────────┤ FK factura_id (ref_id FK)│
+│ FK trabajo_id    │   1 : N   │ PK pago_id               │
+│    fecha         │           │    metodo                │
+│    subtotal      │           │    monto                 │
+│    impuesto      │           │    fecha                 │
+│    total         │           │    referencia_ext        │
+│    estado        │           │    estado                │
+│    creado_en     │           │    creado_en             │
+└──────────────────┘           └──────────────────────────┘
+```
+
+### 2.2 Cardinalidades y Relaciones
+
+| Relación | Tipo | Descripción |
+|---|---|---|
+| `CLIENTE` → `TRABAJO` | 1 : N | Un cliente genera muchos trabajos |
+| `TRABAJO` → `TRABAJO_SERVICIO` | 1 : N | Un trabajo tiene varios servicios |
+| `SERVICIO` → `TRABAJO_SERVICIO` | 1 : N | Un servicio aparece en varios trabajos |
+| `TRABAJO` → `TRABAJO_ARCHIVO` | 1 : N | Un trabajo puede tener varios archivos |
+| `ARCHIVO` → `TRABAJO_ARCHIVO` | 1 : N | Un archivo puede usarse en varios trabajos |
+| `TRABAJO` → `COLAMAQUINA` | 1 : N | Un trabajo puede asignarse a varias máquinas |
+| `MAQUINA` → `COLAMAQUINA` | 1 : N | Una máquina tiene una cola de trabajos |
+| `TRABAJO` → `FACTURA` | 1 : 1 | Un trabajo genera una factura |
+| `FACTURA` → `PAGO` | 1 : N | Una factura puede tener varios pagos parciales |
+
+---
+
+## 3. Diccionario de Datos
+
+### CLIENTE
+
+| Campo | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `cliente_id` | INT | PK, AUTO | Identificador único del cliente |
+| `tipo_doc` | VARCHAR(5) | NOT NULL, CHECK | Tipo de documento: `CC`, `NIT`, `CE`, `PAS` |
+| `num_doc` | VARCHAR(20) | NOT NULL, UNIQUE | Número de documento |
+| `nombre` | VARCHAR(150) | NOT NULL | Nombre completo o razón social |
+| `telefono` | VARCHAR(20) | — | Teléfono de contacto |
+| `email` | VARCHAR(120) | — | Correo electrónico |
+| `estado` | VARCHAR(10) | CHECK | `ACTIVO` / `INACTIVO` |
+| `creado_en` | TIMESTAMP | DEFAULT NOW | Fecha de registro |
+| `actualizado_en` | TIMESTAMP | ON UPDATE | Fecha de última modificación |
+
+### TRABAJO
+
+| Campo | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `trabajo_id` | INT | PK, AUTO | Identificador único del trabajo |
+| `cliente_id` | INT | FK → CLIENTE | Cliente que solicita el trabajo |
+| `nombre` | VARCHAR(200) | NOT NULL | Nombre o descripción corta |
+| `descripcion` | TEXT | — | Detalles del trabajo |
+| `estado` | VARCHAR(15) | CHECK | `PENDIENTE`, `EN_PROCESO`, `COMPLETADO`, `CANCELADO` |
+| `fecha_inicio` | TIMESTAMP | — | Inicio del trabajo |
+| `fecha_fin` | TIMESTAMP | — | Finalización del trabajo |
+| `creado_en` | TIMESTAMP | DEFAULT NOW | Fecha de creación |
+| `actualizado_en` | TIMESTAMP | ON UPDATE | Fecha de modificación |
+
+### SERVICIO
+
+| Campo | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `servicio_id` | INT | PK, AUTO | Identificador del servicio |
+| `nombre` | VARCHAR(100) | NOT NULL, UNIQUE | Nombre del servicio |
+| `descripcion` | VARCHAR(300) | — | Descripción del servicio |
+| `precio_base` | DECIMAL(10,2) | NOT NULL, ≥ 0 | Precio base del servicio |
+| `estado` | VARCHAR(10) | CHECK | `ACTIVO` / `INACTIVO` |
+
+### ARCHIVO
+
+| Campo | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `archivo_id` | INT | PK, AUTO | Identificador del archivo |
+| `nombre` | VARCHAR(200) | NOT NULL | Nombre del archivo |
+| `extension` | VARCHAR(10) | — | Extensión: PDF, DOCX, JPG, etc. |
+| `ruta` | VARCHAR(500) | — | Ruta o URL de almacenamiento |
+| `tamanio_kb` | INT | — | Tamaño en kilobytes |
+| `estado` | VARCHAR(10) | CHECK | `ACTIVO` / `INACTIVO` |
+| `creado_en` | TIMESTAMP | DEFAULT NOW | Fecha de carga |
+
+### TRABAJO_SERVICIO (Tabla Pivote)
+
+| Campo | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `ts_id` | INT | PK, AUTO | Identificador |
+| `trabajo_id` | INT | FK → TRABAJO | Trabajo asociado |
+| `servicio_id` | INT | FK → SERVICIO | Servicio asociado |
+| `cantidad` | INT | NOT NULL, ≥ 1 | Cantidad de unidades |
+| `precio_unit` | DECIMAL(10,2) | NOT NULL | Precio unitario aplicado |
+| `subtotal` | DECIMAL(10,2) | COMPUTED | `cantidad × precio_unit` |
+
+### TRABAJO_ARCHIVO (Tabla Pivote)
+
+| Campo | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `ta_id` | INT | PK, AUTO | Identificador |
+| `trabajo_id` | INT | FK → TRABAJO | Trabajo asociado |
+| `archivo_id` | INT | FK → ARCHIVO | Archivo asociado |
+| `copias` | INT | DEFAULT 1 | Número de copias a imprimir |
+| `instrucciones` | TEXT | — | Instrucciones especiales de impresión |
+
+### MAQUINA
+
+| Campo | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `maquina_id` | INT | PK, AUTO | Identificador de la máquina |
+| `nombre` | VARCHAR(100) | NOT NULL | Nombre o código interno |
+| `descripcion` | VARCHAR(300) | — | Descripción técnica |
+| `tipo` | VARCHAR(50) | — | Tipo: Impresora, Plóter, Copiadora, etc. |
+| `estado` | VARCHAR(10) | CHECK | `ACTIVO` / `INACTIVO` |
+| `creado_en` | TIMESTAMP | DEFAULT NOW | Fecha de registro |
+
+### COLAMAQUINA
+
+| Campo | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `cola_id` | INT | PK, AUTO | Identificador de turno en cola |
+| `maquina_id` | INT | FK → MAQUINA | Máquina asignada |
+| `trabajo_id` | INT | FK → TRABAJO | Trabajo en cola |
+| `prioridad` | INT | DEFAULT 5 | Prioridad (1=alta, 10=baja) |
+| `estado` | VARCHAR(15) | CHECK | `PENDIENTE`, `EN_PROCESO`, `COMPLETADO`, `CANCELADO` |
+| `inicio_estimado` | TIMESTAMP | — | Inicio programado |
+| `fin_estimado` | TIMESTAMP | — | Fin programado |
+| `inicio_real` | TIMESTAMP | — | Inicio real |
+| `fin_real` | TIMESTAMP | — | Fin real |
+| `creado_en` | TIMESTAMP | DEFAULT NOW | Fecha de creación |
+
+> ⚠️ **Anti-solapamiento**: Se aplica un CHECK / TRIGGER para que una máquina no tenga dos registros `EN_PROCESO` simultáneos.
+
+### FACTURA
+
+| Campo | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `factura_id` | INT | PK, AUTO | Identificador de factura |
+| `trabajo_id` | INT | FK → TRABAJO, UNIQUE | Trabajo facturado (1:1) |
+| `fecha` | TIMESTAMP | DEFAULT NOW | Fecha de emisión |
+| `subtotal` | DECIMAL(10,2) | NOT NULL | Base antes de impuesto |
+| `impuesto` | DECIMAL(10,2) | DEFAULT 0 | IVA u otro impuesto |
+| `total` | DECIMAL(10,2) | NOT NULL | Total a pagar |
+| `estado` | VARCHAR(10) | CHECK | `PENDIENTE`, `PAGADO`, `ANULADO` |
+| `creado_en` | TIMESTAMP | DEFAULT NOW | Fecha de registro |
+
+### PAGO
+
+| Campo | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `pago_id` | INT | PK, AUTO | Identificador del pago |
+| `factura_id` | INT | FK → FACTURA | Factura a la que aplica (`referencia_id`) |
+| `metodo` | VARCHAR(30) | CHECK | `EFECTIVO`, `TARJETA`, `TRANSFERENCIA`, `NEQUI`, `DAVIPLATA` |
+| `monto` | DECIMAL(10,2) | NOT NULL, > 0 | Monto del pago |
+| `fecha` | TIMESTAMP | DEFAULT NOW | Fecha del pago |
+| `referencia_ext` | VARCHAR(100) | — | Referencia externa (comprobante) |
+| `estado` | VARCHAR(10) | CHECK | `COMPLETADO`, `ANULADO`, `PENDIENTE` |
+| `creado_en` | TIMESTAMP | DEFAULT NOW | Fecha de registro |
+
+---
+
+## 4. MySQL
+
+### 4.1 Editor del Propio Motor (MySQL CLI / MySQL Shell)
+
+#### Paso 1 — Abrir el terminal y conectarse al servidor MySQL
+
+```bash
+# Opción A: desde terminal Linux/Mac
+mysql -u root -p
+
+# Opción B: desde CMD en Windows
+mysql -u root -p -h 127.0.0.1
+
+# Opción C: MySQL Shell (más moderno)
+mysqlsh --sql -u root -h localhost
+```
+
+> El sistema solicitará la contraseña. Al ingresar correctamente, aparecerá el prompt `mysql>` o `MySQL localhost SQL>`.
+
+#### Paso 2 — Crear la base de datos con charset correcto
+
+```sql
+-- Verificar que no exista antes:
+SHOW DATABASES LIKE 'printlab';
+
+-- Crear la base de datos:
+CREATE DATABASE IF NOT EXISTS printlab
+    CHARACTER SET  utf8mb4
+    COLLATE        utf8mb4_spanish_ci;
+
+-- Seleccionarla como activa:
+USE printlab;
+
+-- Confirmar:
+SELECT DATABASE();
+-- Resultado esperado: printlab
+```
+
+#### Paso 3 — Ejecutar el DDL completo
+
+```sql
+-- ============================================================
+-- PRINTLAB — DDL MySQL
+-- ============================================================
+
+CREATE TABLE CLIENTE (
+    cliente_id     INT           NOT NULL AUTO_INCREMENT,
+    tipo_doc       VARCHAR(5)    NOT NULL,
+    num_doc        VARCHAR(20)   NOT NULL,
+    nombre         VARCHAR(150)  NOT NULL,
+    telefono       VARCHAR(20),
+    email          VARCHAR(120),
+    estado         VARCHAR(10)   NOT NULL DEFAULT 'ACTIVO',
+    creado_en      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    actualizado_en TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                 ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT PK_CLIENTE   PRIMARY KEY (cliente_id),
+    CONSTRAINT UQ_CLI_DOC   UNIQUE (num_doc),
+    CONSTRAINT CK_CLI_TDOC  CHECK (tipo_doc IN ('CC','NIT','CE','PAS')),
+    CONSTRAINT CK_CLI_ESTADO CHECK (estado IN ('ACTIVO','INACTIVO'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_spanish_ci;
+
+CREATE TABLE TRABAJO (
+    trabajo_id     INT           NOT NULL AUTO_INCREMENT,
+    cliente_id     INT           NOT NULL,
+    nombre         VARCHAR(200)  NOT NULL,
+    descripcion    TEXT,
+    estado         VARCHAR(15)   NOT NULL DEFAULT 'PENDIENTE',
+    fecha_inicio   DATETIME,
+    fecha_fin      DATETIME,
+    creado_en      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    actualizado_en TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                 ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT PK_TRABAJO    PRIMARY KEY (trabajo_id),
+    CONSTRAINT FK_TRB_CLI    FOREIGN KEY (cliente_id)
+        REFERENCES CLIENTE(cliente_id)
+        ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT CK_TRB_ESTADO CHECK (estado IN ('PENDIENTE','EN_PROCESO','COMPLETADO','CANCELADO'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE SERVICIO (
+    servicio_id    INT            NOT NULL AUTO_INCREMENT,
+    nombre         VARCHAR(100)   NOT NULL,
+    descripcion    VARCHAR(300),
+    precio_base    DECIMAL(10,2)  NOT NULL,
+    estado         VARCHAR(10)    NOT NULL DEFAULT 'ACTIVO',
+    CONSTRAINT PK_SERVICIO    PRIMARY KEY (servicio_id),
+    CONSTRAINT UQ_SRV_NOMBRE  UNIQUE (nombre),
+    CONSTRAINT CK_SRV_PRECIO  CHECK (precio_base >= 0),
+    CONSTRAINT CK_SRV_ESTADO  CHECK (estado IN ('ACTIVO','INACTIVO'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE ARCHIVO (
+    archivo_id     INT            NOT NULL AUTO_INCREMENT,
+    nombre         VARCHAR(200)   NOT NULL,
+    extension      VARCHAR(10),
+    ruta           VARCHAR(500),
+    tamanio_kb     INT,
+    estado         VARCHAR(10)    NOT NULL DEFAULT 'ACTIVO',
+    creado_en      TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_ARCHIVO    PRIMARY KEY (archivo_id),
+    CONSTRAINT CK_ARH_ESTADO CHECK (estado IN ('ACTIVO','INACTIVO'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE TRABAJO_SERVICIO (
+    ts_id          INT            NOT NULL AUTO_INCREMENT,
+    trabajo_id     INT            NOT NULL,
+    servicio_id    INT            NOT NULL,
+    cantidad       INT            NOT NULL DEFAULT 1,
+    precio_unit    DECIMAL(10,2)  NOT NULL,
+    subtotal       DECIMAL(10,2)  GENERATED ALWAYS AS (cantidad * precio_unit) STORED,
+    CONSTRAINT PK_TS         PRIMARY KEY (ts_id),
+    CONSTRAINT FK_TS_TRB     FOREIGN KEY (trabajo_id)
+        REFERENCES TRABAJO(trabajo_id)  ON DELETE CASCADE,
+    CONSTRAINT FK_TS_SRV     FOREIGN KEY (servicio_id)
+        REFERENCES SERVICIO(servicio_id),
+    CONSTRAINT CK_TS_CANT    CHECK (cantidad >= 1),
+    CONSTRAINT CK_TS_PRECIO  CHECK (precio_unit >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE TRABAJO_ARCHIVO (
+    ta_id          INT   NOT NULL AUTO_INCREMENT,
+    trabajo_id     INT   NOT NULL,
+    archivo_id     INT   NOT NULL,
+    copias         INT   NOT NULL DEFAULT 1,
+    instrucciones  TEXT,
+    CONSTRAINT PK_TA         PRIMARY KEY (ta_id),
+    CONSTRAINT FK_TA_TRB     FOREIGN KEY (trabajo_id)
+        REFERENCES TRABAJO(trabajo_id)  ON DELETE CASCADE,
+    CONSTRAINT FK_TA_ARH     FOREIGN KEY (archivo_id)
+        REFERENCES ARCHIVO(archivo_id),
+    CONSTRAINT CK_TA_COPIAS  CHECK (copias >= 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE MAQUINA (
+    maquina_id     INT           NOT NULL AUTO_INCREMENT,
+    nombre         VARCHAR(100)  NOT NULL,
+    descripcion    VARCHAR(300),
+    tipo           VARCHAR(50),
+    estado         VARCHAR(10)   NOT NULL DEFAULT 'ACTIVO',
+    creado_en      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_MAQUINA    PRIMARY KEY (maquina_id),
+    CONSTRAINT CK_MAQ_ESTADO CHECK (estado IN ('ACTIVO','INACTIVO'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE COLAMAQUINA (
+    cola_id          INT        NOT NULL AUTO_INCREMENT,
+    maquina_id       INT        NOT NULL,
+    trabajo_id       INT        NOT NULL,
+    prioridad        INT        NOT NULL DEFAULT 5,
+    estado           VARCHAR(15) NOT NULL DEFAULT 'PENDIENTE',
+    inicio_estimado  DATETIME,
+    fin_estimado     DATETIME,
+    inicio_real      DATETIME,
+    fin_real         DATETIME,
+    creado_en        TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_COLA        PRIMARY KEY (cola_id),
+    CONSTRAINT FK_COLA_MAQ    FOREIGN KEY (maquina_id)
+        REFERENCES MAQUINA(maquina_id),
+    CONSTRAINT FK_COLA_TRB    FOREIGN KEY (trabajo_id)
+        REFERENCES TRABAJO(trabajo_id),
+    CONSTRAINT CK_COLA_ESTADO CHECK (estado IN ('PENDIENTE','EN_PROCESO','COMPLETADO','CANCELADO')),
+    CONSTRAINT CK_COLA_PRIO   CHECK (prioridad BETWEEN 1 AND 10)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Trigger anti-solapamiento: una máquina solo puede tener UN trabajo EN_PROCESO
+DELIMITER $$
+CREATE TRIGGER TRG_COLA_NO_SOLAPAMIENTO
+BEFORE INSERT ON COLAMAQUINA
+FOR EACH ROW
+BEGIN
+    DECLARE cnt INT;
+    IF NEW.estado = 'EN_PROCESO' THEN
+        SELECT COUNT(*) INTO cnt
+        FROM COLAMAQUINA
+        WHERE maquina_id = NEW.maquina_id
+          AND estado = 'EN_PROCESO';
+        IF cnt > 0 THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'La máquina ya tiene un trabajo EN_PROCESO';
+        END IF;
+    END IF;
+END$$
+DELIMITER ;
+
+CREATE TABLE FACTURA (
+    factura_id     INT            NOT NULL AUTO_INCREMENT,
+    trabajo_id     INT            NOT NULL,
+    fecha          TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    subtotal       DECIMAL(10,2)  NOT NULL,
+    impuesto       DECIMAL(10,2)  NOT NULL DEFAULT 0.00,
+    total          DECIMAL(10,2)  NOT NULL,
+    estado         VARCHAR(10)    NOT NULL DEFAULT 'PENDIENTE',
+    creado_en      TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_FACTURA    PRIMARY KEY (factura_id),
+    CONSTRAINT UQ_FAC_TRB    UNIQUE (trabajo_id),
+    CONSTRAINT FK_FAC_TRB    FOREIGN KEY (trabajo_id)
+        REFERENCES TRABAJO(trabajo_id),
+    CONSTRAINT CK_FAC_ESTADO CHECK (estado IN ('PENDIENTE','PAGADO','ANULADO'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE PAGO (
+    pago_id        INT            NOT NULL AUTO_INCREMENT,
+    factura_id     INT            NOT NULL,
+    metodo         VARCHAR(30)    NOT NULL,
+    monto          DECIMAL(10,2)  NOT NULL,
+    fecha          TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    referencia_ext VARCHAR(100),
+    estado         VARCHAR(12)    NOT NULL DEFAULT 'COMPLETADO',
+    creado_en      TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_PAGO       PRIMARY KEY (pago_id),
+    CONSTRAINT FK_PAG_FAC    FOREIGN KEY (factura_id)
+        REFERENCES FACTURA(factura_id),
+    CONSTRAINT CK_PAG_METODO CHECK (metodo IN ('EFECTIVO','TARJETA','TRANSFERENCIA','NEQUI','DAVIPLATA')),
+    CONSTRAINT CK_PAG_MONTO  CHECK (monto > 0),
+    CONSTRAINT CK_PAG_ESTADO CHECK (estado IN ('COMPLETADO','ANULADO','PENDIENTE'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+#### Paso 4 — Verificar la creación
+
+```sql
+-- Ver todas las tablas creadas:
+SHOW TABLES;
+
+-- Ver estructura de COLAMAQUINA:
+DESCRIBE COLAMAQUINA;
+
+-- Ver todas las FK del schema:
+SELECT
+    kcu.TABLE_NAME       AS tabla,
+    kcu.COLUMN_NAME      AS columna,
+    kcu.CONSTRAINT_NAME  AS nombre_fk,
+    kcu.REFERENCED_TABLE_NAME  AS tabla_ref,
+    kcu.REFERENCED_COLUMN_NAME AS columna_ref
+FROM information_schema.KEY_COLUMN_USAGE kcu
+WHERE kcu.TABLE_SCHEMA = 'printlab'
+  AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+ORDER BY kcu.TABLE_NAME;
+
+-- Verificar el trigger:
+SHOW TRIGGERS FROM printlab;
+```
+
+---
+
+### 4.2 DBeaver con MySQL
+
+#### Paso 1 — Crear la conexión
+
+```
+Menú superior → Database → New Database Connection
+↓
+Seleccionar el driver:  MySQL  →  Click "Next >"
+```
+
+En el formulario de conexión completar:
+
+| Campo | Valor |
+|---|---|
+| Server Host | `localhost` |
+| Port | `3306` |
+| Database | `printlab` |
+| Username | `root` |
+| Password | tu contraseña |
+
+```
+→ Click "Test Connection"
+   Mensaje esperado: "Connected (X ms)"
+→ Click "Finish"
+```
+
+#### Paso 2 — Crear el schema desde la GUI de DBeaver
+
+```
+Panel izquierdo (Database Navigator):
+→ Expandir la conexión MySQL recién creada
+→ Clic derecho sobre el nodo "Databases"
+→ Seleccionar: "Create New Database"
+   ┌─────────────────────────────────────────┐
+   │ Database Name :  printlab               │
+   │ Character Set :  utf8mb4                │
+   │ Collation     :  utf8mb4_spanish_ci     │
+   └─────────────────────────────────────────┘
+→ Click "OK"
+```
+
+#### Paso 3 — Abrir SQL Editor y ejecutar el DDL
+
+```
+En el Database Navigator:
+→ Clic derecho sobre "printlab"
+→ SQL Editor → "New SQL Script"
+
+En el editor que se abre:
+→ Pegar el DDL completo de MySQL (ver sección 4.1)
+→ Ejecutar con:  Ctrl + Alt + X   (ejecuta el script completo)
+  O seleccionar todo (Ctrl+A) y presionar:  Alt + X
+
+Panel inferior "Output" mostrará:
+  ✔ Table 'CLIENTE' created
+  ✔ Table 'TRABAJO' created
+  ... (un resultado por cada tabla)
+```
+
+#### Paso 4 — Visualizar el Diagrama ER
+
+```
+Database Navigator:
+→ Expandir: printlab → Tables
+→ Seleccionar TODAS las tablas:
+  · Click en la primera tabla
+  · Shift + Click en la última  (selección múltiple)
+→ Clic derecho sobre la selección
+→ "View Diagram"
+
+El diagrama ER se abre en una nueva pestaña mostrando:
+  · Cada tabla como un bloque con sus columnas
+  · PK marcadas con ícono de llave dorada
+  · FK marcadas con ícono de llave plateada
+  · Líneas de relación entre tablas (1:N, 1:1)
+
+Para exportar el diagrama:
+→ En la pestaña del diagrama, menú superior: File → Save Diagram as Image
+→ Formato recomendado: PNG
+→ Guardar como: DER_PrintLab_MySQL.png
+```
+
+#### Paso 5 — Inspeccionar tablas y relaciones en DBeaver
+
+```
+Doble clic sobre cualquier tabla (ej: COLAMAQUINA):
+  Pestaña "Properties" → muestra columnas, tipos y constraints
+  Pestaña "References" → muestra FK entrantes y salientes
+  Pestaña "ER Diagram" → muestra el diagrama local de esa tabla
+  Pestaña "Data"       → permite ver/editar registros existentes
+```
+
+---
+
+### 4.3 MySQL Workbench
+
+#### Paso 1 — Crear una nueva conexión
+
+```
+Pantalla de inicio de MySQL Workbench:
+→ En "MySQL Connections", click el botón "+"
+   ┌────────────────────────────────────────────────┐
+   │ Connection Name: PrintLab Local                │
+   │ Connection Method: Standard (TCP/IP)           │
+   │ Hostname: 127.0.0.1    Port: 3306              │
+   │ Username: root                                 │
+   │ Password: [Store in Vault...] → ingresar pass  │
+   └────────────────────────────────────────────────┘
+→ "Test Connection" → debe mostrar "Successfully made..."
+→ "OK" → "OK"
+→ Doble clic sobre la nueva conexión para conectarse
+```
+
+#### Paso 2 — Crear el Schema desde la GUI
+
+```
+Panel izquierdo → Pestaña "Schemas"
+→ Clic derecho en área vacía del panel
+→ "Create Schema..."
+   ┌─────────────────────────────────────────┐
+   │ Name       :  printlab                  │
+   │ Charset    :  utf8mb4                   │
+   │ Collation  :  utf8mb4_spanish_ci        │
+   └─────────────────────────────────────────┘
+→ Click "Apply"
+→ Aparece ventana con el SQL generado automáticamente:
+  CREATE SCHEMA `printlab` DEFAULT CHARACTER SET utf8mb4 ...
+→ Click "Apply" → "Finish"
+```
+
+#### Paso 3 — Establecer el Schema activo
+
+```
+Panel "Schemas":
+→ Doble clic sobre "printlab"
+  (el nombre queda en NEGRITA → indica que es el schema activo)
+
+Alternativa desde SQL:
+  USE printlab;
+```
+
+#### Paso 4 — Ejecutar el DDL desde el SQL Editor
+
+```
+Menú superior: File → New Query Tab  (o Ctrl + T)
+→ En la barra de schema (arriba del editor) verificar que diga "printlab"
+→ Pegar el DDL completo de MySQL
+→ Ejecutar:
+  · Ctrl + Shift + Enter  → ejecuta TODO el script
+  · Ctrl + Enter          → ejecuta solo la sentencia actual
+
+Panel inferior "Output" debe mostrar:
+  ✔  0  row(s) affected  (una línea por cada CREATE TABLE)
+  Sin errores en columna "Message"
+```
+
+#### Paso 5 — Generar el EER Diagram (Reverse Engineering)
+
+```
+Método: Reverse Engineering desde la BD existente
+────────────────────────────────────────────────────
+Menú: Database → Reverse Engineer...
+
+  Paso 1 "Connection Options":
+  → Seleccionar la conexión: PrintLab Local
+  → Click "Next >"
+
+  Paso 2 "Connect to DBMS":
+  → Workbench se conecta automáticamente
+  → Click "Next >"
+
+  Paso 3 "Select Schemas":
+  → Marcar la casilla de: ✔ printlab
+  → Click "Next >"
+
+  Paso 4 "Retrieve Objects":
+  → Workbench recupera todos los objetos
+  → Click "Next >"
+
+  Paso 5 "Select Objects":
+  → Marcar: ✔ Import MySQL Table Objects
+  → Click "Execute >"
+
+  Paso 6 "Reverse Engineer":
+  → Workbench genera el modelo EER
+  → Click "Next >" → "Close"
+
+El diagrama EER se abre con todas las tablas.
+Reordenar arrastrando tablas para mejor legibilidad.
+```
+
+#### Paso 6 — Exportar el Diagrama
+
+```
+Con el diagrama EER abierto:
+Menú: File → Export → Export as PNG...
+→ Elegir resolución: 150 dpi (recomendado para documentos)
+→ Guardar como: DER_PrintLab_MySQL_Workbench.png
+```
+
+---
+
+## 5. PostgreSQL
+
+### 5.1 Editor del Propio Motor (psql)
+
+#### Paso 1 — Conectarse al servidor
+
+```bash
+# Opción A: usuario postgres por defecto
+psql -U postgres -h localhost
+
+# Opción B: especificando puerto
+psql -U postgres -h localhost -p 5432
+
+# Prompt esperado:
+# postgres=#
+```
+
+#### Paso 2 — Crear la base de datos
+
+```sql
+-- Crear con encoding correcto:
+CREATE DATABASE printlab
+    WITH OWNER      = postgres
+         ENCODING   = 'UTF8'
+         LC_COLLATE = 'es_CO.UTF-8'
+         LC_CTYPE   = 'es_CO.UTF-8'
+         TEMPLATE   = template0
+         CONNECTION LIMIT = -1;
+
+-- Agregar comentario descriptivo:
+COMMENT ON DATABASE printlab
+    IS 'PrintLab - Centro de copiado e impresión';
+
+-- Conectarse a la BD recién creada:
+\c printlab
+
+-- Confirmar conexión:
+-- Prompt cambia a: printlab=#
+```
+
+#### Paso 3 — DDL adaptado para PostgreSQL
+
+```sql
+-- ============================================================
+-- PRINTLAB — DDL PostgreSQL
+-- ============================================================
+
+-- Sequences para auto-incremento explícito:
+CREATE SEQUENCE seq_cliente    START 1 INCREMENT 1;
+CREATE SEQUENCE seq_trabajo    START 1 INCREMENT 1;
+CREATE SEQUENCE seq_servicio   START 1 INCREMENT 1;
+CREATE SEQUENCE seq_archivo    START 1 INCREMENT 1;
+CREATE SEQUENCE seq_ts         START 1 INCREMENT 1;
+CREATE SEQUENCE seq_ta         START 1 INCREMENT 1;
+CREATE SEQUENCE seq_maquina    START 1 INCREMENT 1;
+CREATE SEQUENCE seq_cola       START 1 INCREMENT 1;
+CREATE SEQUENCE seq_factura    START 1 INCREMENT 1;
+CREATE SEQUENCE seq_pago       START 1 INCREMENT 1;
+
+CREATE TABLE CLIENTE (
+    cliente_id     INTEGER       NOT NULL DEFAULT nextval('seq_cliente'),
+    tipo_doc       VARCHAR(5)    NOT NULL,
+    num_doc        VARCHAR(20)   NOT NULL,
+    nombre         VARCHAR(150)  NOT NULL,
+    telefono       VARCHAR(20),
+    email          VARCHAR(120),
+    estado         VARCHAR(10)   NOT NULL DEFAULT 'ACTIVO',
+    creado_en      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    actualizado_en TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_CLIENTE    PRIMARY KEY (cliente_id),
+    CONSTRAINT UQ_CLI_DOC    UNIQUE (num_doc),
+    CONSTRAINT CK_CLI_TDOC   CHECK (tipo_doc IN ('CC','NIT','CE','PAS')),
+    CONSTRAINT CK_CLI_ESTADO CHECK (estado IN ('ACTIVO','INACTIVO'))
+);
+
+CREATE TABLE TRABAJO (
+    trabajo_id     INTEGER       NOT NULL DEFAULT nextval('seq_trabajo'),
+    cliente_id     INTEGER       NOT NULL,
+    nombre         VARCHAR(200)  NOT NULL,
+    descripcion    TEXT,
+    estado         VARCHAR(15)   NOT NULL DEFAULT 'PENDIENTE',
+    fecha_inicio   TIMESTAMP,
+    fecha_fin      TIMESTAMP,
+    creado_en      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    actualizado_en TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_TRABAJO    PRIMARY KEY (trabajo_id),
+    CONSTRAINT FK_TRB_CLI    FOREIGN KEY (cliente_id)
+        REFERENCES CLIENTE(cliente_id)
+        ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT CK_TRB_ESTADO CHECK (estado IN ('PENDIENTE','EN_PROCESO','COMPLETADO','CANCELADO'))
+);
+
+CREATE TABLE SERVICIO (
+    servicio_id    INTEGER        NOT NULL DEFAULT nextval('seq_servicio'),
+    nombre         VARCHAR(100)   NOT NULL,
+    descripcion    VARCHAR(300),
+    precio_base    NUMERIC(10,2)  NOT NULL,
+    estado         VARCHAR(10)    NOT NULL DEFAULT 'ACTIVO',
+    CONSTRAINT PK_SERVICIO    PRIMARY KEY (servicio_id),
+    CONSTRAINT UQ_SRV_NOMBRE  UNIQUE (nombre),
+    CONSTRAINT CK_SRV_PRECIO  CHECK (precio_base >= 0),
+    CONSTRAINT CK_SRV_ESTADO  CHECK (estado IN ('ACTIVO','INACTIVO'))
+);
+
+CREATE TABLE ARCHIVO (
+    archivo_id     INTEGER        NOT NULL DEFAULT nextval('seq_archivo'),
+    nombre         VARCHAR(200)   NOT NULL,
+    extension      VARCHAR(10),
+    ruta           VARCHAR(500),
+    tamanio_kb     INTEGER,
+    estado         VARCHAR(10)    NOT NULL DEFAULT 'ACTIVO',
+    creado_en      TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_ARCHIVO    PRIMARY KEY (archivo_id),
+    CONSTRAINT CK_ARH_ESTADO CHECK (estado IN ('ACTIVO','INACTIVO'))
+);
+
+CREATE TABLE TRABAJO_SERVICIO (
+    ts_id          INTEGER        NOT NULL DEFAULT nextval('seq_ts'),
+    trabajo_id     INTEGER        NOT NULL,
+    servicio_id    INTEGER        NOT NULL,
+    cantidad       INTEGER        NOT NULL DEFAULT 1,
+    precio_unit    NUMERIC(10,2)  NOT NULL,
+    subtotal       NUMERIC(10,2)  GENERATED ALWAYS AS (cantidad * precio_unit) STORED,
+    CONSTRAINT PK_TS         PRIMARY KEY (ts_id),
+    CONSTRAINT FK_TS_TRB     FOREIGN KEY (trabajo_id)  REFERENCES TRABAJO(trabajo_id)  ON DELETE CASCADE,
+    CONSTRAINT FK_TS_SRV     FOREIGN KEY (servicio_id) REFERENCES SERVICIO(servicio_id),
+    CONSTRAINT CK_TS_CANT    CHECK (cantidad >= 1),
+    CONSTRAINT CK_TS_PRECIO  CHECK (precio_unit >= 0)
+);
+
+CREATE TABLE TRABAJO_ARCHIVO (
+    ta_id          INTEGER   NOT NULL DEFAULT nextval('seq_ta'),
+    trabajo_id     INTEGER   NOT NULL,
+    archivo_id     INTEGER   NOT NULL,
+    copias         INTEGER   NOT NULL DEFAULT 1,
+    instrucciones  TEXT,
+    CONSTRAINT PK_TA         PRIMARY KEY (ta_id),
+    CONSTRAINT FK_TA_TRB     FOREIGN KEY (trabajo_id) REFERENCES TRABAJO(trabajo_id) ON DELETE CASCADE,
+    CONSTRAINT FK_TA_ARH     FOREIGN KEY (archivo_id) REFERENCES ARCHIVO(archivo_id),
+    CONSTRAINT CK_TA_COPIAS  CHECK (copias >= 1)
+);
+
+CREATE TABLE MAQUINA (
+    maquina_id     INTEGER       NOT NULL DEFAULT nextval('seq_maquina'),
+    nombre         VARCHAR(100)  NOT NULL,
+    descripcion    VARCHAR(300),
+    tipo           VARCHAR(50),
+    estado         VARCHAR(10)   NOT NULL DEFAULT 'ACTIVO',
+    creado_en      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_MAQUINA    PRIMARY KEY (maquina_id),
+    CONSTRAINT CK_MAQ_ESTADO CHECK (estado IN ('ACTIVO','INACTIVO'))
+);
+
+CREATE TABLE COLAMAQUINA (
+    cola_id          INTEGER     NOT NULL DEFAULT nextval('seq_cola'),
+    maquina_id       INTEGER     NOT NULL,
+    trabajo_id       INTEGER     NOT NULL,
+    prioridad        INTEGER     NOT NULL DEFAULT 5,
+    estado           VARCHAR(15) NOT NULL DEFAULT 'PENDIENTE',
+    inicio_estimado  TIMESTAMP,
+    fin_estimado     TIMESTAMP,
+    inicio_real      TIMESTAMP,
+    fin_real         TIMESTAMP,
+    creado_en        TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_COLA        PRIMARY KEY (cola_id),
+    CONSTRAINT FK_COLA_MAQ    FOREIGN KEY (maquina_id) REFERENCES MAQUINA(maquina_id),
+    CONSTRAINT FK_COLA_TRB    FOREIGN KEY (trabajo_id) REFERENCES TRABAJO(trabajo_id),
+    CONSTRAINT CK_COLA_ESTADO CHECK (estado IN ('PENDIENTE','EN_PROCESO','COMPLETADO','CANCELADO')),
+    CONSTRAINT CK_COLA_PRIO   CHECK (prioridad BETWEEN 1 AND 10)
+);
+
+-- Trigger anti-solapamiento en PostgreSQL:
+CREATE OR REPLACE FUNCTION fn_no_solapamiento_cola()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.estado = 'EN_PROCESO' THEN
+        IF EXISTS (
+            SELECT 1 FROM COLAMAQUINA
+            WHERE maquina_id = NEW.maquina_id
+              AND estado = 'EN_PROCESO'
+              AND cola_id <> COALESCE(NEW.cola_id, -1)
+        ) THEN
+            RAISE EXCEPTION 'La máquina % ya tiene un trabajo EN_PROCESO', NEW.maquina_id;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER TRG_COLA_NO_SOLAPAMIENTO
+    BEFORE INSERT OR UPDATE ON COLAMAQUINA
+    FOR EACH ROW EXECUTE FUNCTION fn_no_solapamiento_cola();
+
+CREATE TABLE FACTURA (
+    factura_id     INTEGER        NOT NULL DEFAULT nextval('seq_factura'),
+    trabajo_id     INTEGER        NOT NULL,
+    fecha          TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    subtotal       NUMERIC(10,2)  NOT NULL,
+    impuesto       NUMERIC(10,2)  NOT NULL DEFAULT 0.00,
+    total          NUMERIC(10,2)  NOT NULL,
+    estado         VARCHAR(10)    NOT NULL DEFAULT 'PENDIENTE',
+    creado_en      TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_FACTURA    PRIMARY KEY (factura_id),
+    CONSTRAINT UQ_FAC_TRB    UNIQUE (trabajo_id),
+    CONSTRAINT FK_FAC_TRB    FOREIGN KEY (trabajo_id) REFERENCES TRABAJO(trabajo_id),
+    CONSTRAINT CK_FAC_ESTADO CHECK (estado IN ('PENDIENTE','PAGADO','ANULADO'))
+);
+
+CREATE TABLE PAGO (
+    pago_id        INTEGER        NOT NULL DEFAULT nextval('seq_pago'),
+    factura_id     INTEGER        NOT NULL,
+    metodo         VARCHAR(30)    NOT NULL,
+    monto          NUMERIC(10,2)  NOT NULL,
+    fecha          TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    referencia_ext VARCHAR(100),
+    estado         VARCHAR(12)    NOT NULL DEFAULT 'COMPLETADO',
+    creado_en      TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_PAGO       PRIMARY KEY (pago_id),
+    CONSTRAINT FK_PAG_FAC    FOREIGN KEY (factura_id) REFERENCES FACTURA(factura_id),
+    CONSTRAINT CK_PAG_METODO CHECK (metodo IN ('EFECTIVO','TARJETA','TRANSFERENCIA','NEQUI','DAVIPLATA')),
+    CONSTRAINT CK_PAG_MONTO  CHECK (monto > 0),
+    CONSTRAINT CK_PAG_ESTADO CHECK (estado IN ('COMPLETADO','ANULADO','PENDIENTE'))
+);
+```
+
+#### Paso 4 — Verificar en psql
+
+```sql
+-- Listar tablas del schema public:
+\dt
+
+-- Describir una tabla:
+\d COLAMAQUINA
+
+-- Listar todas las FK:
+SELECT
+    tc.table_name      AS tabla,
+    kcu.column_name    AS columna,
+    ccu.table_name     AS tabla_ref,
+    ccu.column_name    AS columna_ref,
+    tc.constraint_name AS nombre_fk
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+    ON tc.constraint_name = kcu.constraint_name
+    AND tc.table_schema   = kcu.table_schema
+JOIN information_schema.constraint_column_usage ccu
+    ON ccu.constraint_name = tc.constraint_name
+WHERE tc.constraint_type = 'FOREIGN KEY'
+  AND tc.table_schema    = 'public'
+ORDER BY tc.table_name;
+
+-- Listar triggers creados:
+SELECT trigger_name, event_manipulation, event_object_table
+FROM information_schema.triggers
+WHERE trigger_schema = 'public';
+
+-- Salir:
+\q
+```
+
+---
+
+### 5.2 DBeaver con PostgreSQL
+
+#### Paso 1 — Crear la conexión
+
+```
+Database → New Database Connection
+→ Seleccionar: PostgreSQL → Next
+```
+
+| Campo | Valor |
+|---|---|
+| Host | `localhost` |
+| Port | `5432` |
+| Database | `postgres` *(conexión inicial)* |
+| User | `postgres` |
+| Password | tu contraseña |
+
+```
+→ "Test Connection" → "Connected"
+→ "Finish"
+```
+
+#### Paso 2 — Crear la base de datos desde DBeaver
+
+```
+Database Navigator:
+→ Expandir la conexión PostgreSQL
+→ Expandir "Databases"
+→ Clic derecho sobre "Databases"
+→ "Create New Database"
+   ┌──────────────────────────────────────────┐
+   │ Database Name :  printlab                │
+   │ Owner         :  postgres                │
+   │ Encoding      :  UTF8                    │
+   │ Tablespace    :  pg_default              │
+   └──────────────────────────────────────────┘
+→ OK
+```
+
+#### Paso 3 — Conectarse y ejecutar el DDL
+
+```
+→ Doble clic sobre "printlab" (abre la conexión a esa BD)
+→ Clic derecho sobre "printlab"
+→ SQL Editor → "New SQL Script"
+→ Pegar el DDL de PostgreSQL completo
+→ Ctrl + Alt + X  (ejecutar script completo)
+→ Verificar en panel "Output" que no haya errores
+```
+
+#### Paso 4 — Visualizar el Diagrama ER
+
+```
+Database Navigator:
+→ Expandir: printlab → Schemas → public → Tables
+→ Seleccionar todas las tablas (Ctrl + A)
+→ Clic derecho → "View Diagram"
+
+El ER Diagram se abre en una pestaña nueva:
+  · Tablas con columnas listadas
+  · Líneas de relación con cardinalidad
+  · Colores diferentes para PK y FK
+
+Exportar:
+→ En la pestaña del diagrama: File → Save as PNG
+→ Nombre sugerido: DER_PrintLab_PostgreSQL_DBeaver.png
+```
+
+---
+
+### 5.3 PgAdmin 4
+
+#### Paso 1 — Abrir PgAdmin 4 y registrar el servidor
+
+```
+Abrir PgAdmin 4:
+  · En Windows: Inicio → pgAdmin 4
+  · En navegador: http://localhost/pgadmin4
+
+Panel izquierdo (Browser):
+→ Clic derecho sobre "Servers"
+→ "Register" → "Server..."
+
+  Pestaña "General":
+  ┌───────────────────────────────┐
+  │ Name: PrintLab Local          │
+  └───────────────────────────────┘
+
+  Pestaña "Connection":
+  ┌───────────────────────────────┐
+  │ Host:     localhost           │
+  │ Port:     5432                │
+  │ Username: postgres            │
+  │ Password: ••••••••            │
+  │ ✔ Save password               │
+  └───────────────────────────────┘
+
+→ "Save"
+```
+
+#### Paso 2 — Crear la base de datos
+
+```
+Browser:
+→ Expandir: Servers → PrintLab Local
+→ Clic derecho sobre "Databases"
+→ "Create" → "Database..."
+
+  Pestaña "General":
+  ┌──────────────────────────────────────┐
+  │ Database:  printlab                  │
+  │ Owner:     postgres                  │
+  └──────────────────────────────────────┘
+
+  Pestaña "Definition":
+  ┌──────────────────────────────────────┐
+  │ Encoding:  UTF8                      │
+  │ Template:  template0                 │
+  │ Collation: es_CO.UTF-8  (si está)    │
+  │             default  (si no está)    │
+  └──────────────────────────────────────┘
+
+→ "Save"
+```
+
+#### Paso 3 — Abrir Query Tool y ejecutar el DDL
+
+```
+Browser:
+→ Clic derecho sobre "printlab"
+→ "Query Tool"
+
+En el editor SQL que se abre:
+→ Pegar el DDL completo de PostgreSQL
+→ Click botón ▶ "Execute Script"  (o tecla F5)
+
+Panel inferior "Messages" debe mostrar:
+  CREATE TABLE
+  CREATE TABLE
+  ... (10 veces)
+  CREATE FUNCTION
+  CREATE TRIGGER
+
+Si hay error, el panel indicará la línea y causa exacta.
+```
+
+#### Paso 4 — Navegar el modelo creado
+
+```
+Browser (actualizar con F5 o clic derecho → Refresh):
+→ printlab → Schemas → public → Tables
+  Aquí aparecen las 10 tablas creadas.
+
+Para ver las propiedades de una tabla:
+  → Clic derecho sobre "COLAMAQUINA"
+  → "Properties"
+  → Pestaña "Columns": muestra todas las columnas
+  → Pestaña "Constraints": muestra PK, FK, CHECK, UNIQUE
+
+Para ver los datos:
+  → Clic derecho sobre cualquier tabla
+  → "View/Edit Data" → "All Rows"
+```
+
+#### Paso 5 — Generar el ERD en PgAdmin 4
+
+```
+Browser:
+→ Clic derecho sobre "printlab"
+→ "Generate ERD (Beta)"
+
+Se abre el editor de ERD:
+  · Muestra todas las tablas como bloques
+  · Líneas entre tablas = relaciones FK
+  · Doble clic en una tabla → editar estructura
+
+Para exportar:
+→ Botón "Save as image" (ícono de cámara en la barra)
+→ Formato PNG
+→ Guardar como: DER_PrintLab_PostgreSQL_PgAdmin.png
+```
+
+---
+
+## 6. MS SQL Server
+
+### 6.1 Editor del Propio Motor (sqlcmd)
+
+#### Paso 1 — Conectarse mediante sqlcmd
+
+```bash
+# Autenticación SQL:
+sqlcmd -S localhost -U sa -P "TuContraseña"
+
+# Autenticación Windows (si el servidor es local):
+sqlcmd -S localhost -E
+
+# Con puerto explícito:
+sqlcmd -S localhost,1433 -U sa -P "TuContraseña"
+
+# Prompt esperado: 1>
+```
+
+#### Paso 2 — Crear la base de datos
+
+```sql
+-- Verificar que no exista:
+IF DB_ID('printlab') IS NOT NULL
+    PRINT 'La BD ya existe'
+ELSE
+    PRINT 'BD no existe, procediendo a crear'
+GO
+
+-- Crear la BD:
+CREATE DATABASE printlab
+ON PRIMARY (
+    NAME        = N'printlab_data',
+    FILENAME    = N'C:\SQLData\printlab.mdf',
+    SIZE        = 10MB,
+    MAXSIZE     = 500MB,
+    FILEGROWTH  = 10MB
+)
+LOG ON (
+    NAME        = N'printlab_log',
+    FILENAME    = N'C:\SQLData\printlab_log.ldf',
+    SIZE        = 5MB,
+    MAXSIZE     = 100MB,
+    FILEGROWTH  = 5MB
+);
+GO
+
+-- Configurar collation en español:
+ALTER DATABASE printlab
+    COLLATE Modern_Spanish_CI_AS;
+GO
+
+-- Seleccionarla:
+USE printlab;
+GO
+```
+
+> ⚠️ Si la ruta `C:\SQLData\` no existe, créala antes o usa la ruta por defecto de SQL Server quitando el bloque `ON PRIMARY`.
+
+#### Paso 3 — DDL adaptado para T-SQL (SQL Server)
+
+```sql
+-- ============================================================
+-- PRINTLAB — DDL MS SQL Server (T-SQL)
+-- ============================================================
+
+CREATE TABLE CLIENTE (
+    cliente_id     INT            NOT NULL IDENTITY(1,1),
+    tipo_doc       NVARCHAR(5)    NOT NULL,
+    num_doc        NVARCHAR(20)   NOT NULL,
+    nombre         NVARCHAR(150)  NOT NULL,
+    telefono       NVARCHAR(20),
+    email          NVARCHAR(120),
+    estado         NVARCHAR(10)   NOT NULL DEFAULT 'ACTIVO',
+    creado_en      DATETIME2      NOT NULL DEFAULT GETDATE(),
+    actualizado_en DATETIME2      NOT NULL DEFAULT GETDATE(),
+    CONSTRAINT PK_CLIENTE    PRIMARY KEY (cliente_id),
+    CONSTRAINT UQ_CLI_DOC    UNIQUE (num_doc),
+    CONSTRAINT CK_CLI_TDOC   CHECK (tipo_doc IN ('CC','NIT','CE','PAS')),
+    CONSTRAINT CK_CLI_ESTADO CHECK (estado IN ('ACTIVO','INACTIVO'))
+);
+GO
+
+CREATE TABLE TRABAJO (
+    trabajo_id     INT            NOT NULL IDENTITY(1,1),
+    cliente_id     INT            NOT NULL,
+    nombre         NVARCHAR(200)  NOT NULL,
+    descripcion    NVARCHAR(MAX),
+    estado         NVARCHAR(15)   NOT NULL DEFAULT 'PENDIENTE',
+    fecha_inicio   DATETIME2,
+    fecha_fin      DATETIME2,
+    creado_en      DATETIME2      NOT NULL DEFAULT GETDATE(),
+    actualizado_en DATETIME2      NOT NULL DEFAULT GETDATE(),
+    CONSTRAINT PK_TRABAJO    PRIMARY KEY (trabajo_id),
+    CONSTRAINT FK_TRB_CLI    FOREIGN KEY (cliente_id)
+        REFERENCES CLIENTE(cliente_id)
+        ON DELETE NO ACTION ON UPDATE CASCADE,
+    CONSTRAINT CK_TRB_ESTADO CHECK (estado IN ('PENDIENTE','EN_PROCESO','COMPLETADO','CANCELADO'))
+);
+GO
+
+CREATE TABLE SERVICIO (
+    servicio_id    INT            NOT NULL IDENTITY(1,1),
+    nombre         NVARCHAR(100)  NOT NULL,
+    descripcion    NVARCHAR(300),
+    precio_base    DECIMAL(10,2)  NOT NULL,
+    estado         NVARCHAR(10)   NOT NULL DEFAULT 'ACTIVO',
+    CONSTRAINT PK_SERVICIO    PRIMARY KEY (servicio_id),
+    CONSTRAINT UQ_SRV_NOMBRE  UNIQUE (nombre),
+    CONSTRAINT CK_SRV_PRECIO  CHECK (precio_base >= 0),
+    CONSTRAINT CK_SRV_ESTADO  CHECK (estado IN ('ACTIVO','INACTIVO'))
+);
+GO
+
+CREATE TABLE ARCHIVO (
+    archivo_id     INT            NOT NULL IDENTITY(1,1),
+    nombre         NVARCHAR(200)  NOT NULL,
+    extension      NVARCHAR(10),
+    ruta           NVARCHAR(500),
+    tamanio_kb     INT,
+    estado         NVARCHAR(10)   NOT NULL DEFAULT 'ACTIVO',
+    creado_en      DATETIME2      NOT NULL DEFAULT GETDATE(),
+    CONSTRAINT PK_ARCHIVO    PRIMARY KEY (archivo_id),
+    CONSTRAINT CK_ARH_ESTADO CHECK (estado IN ('ACTIVO','INACTIVO'))
+);
+GO
+
+CREATE TABLE TRABAJO_SERVICIO (
+    ts_id          INT            NOT NULL IDENTITY(1,1),
+    trabajo_id     INT            NOT NULL,
+    servicio_id    INT            NOT NULL,
+    cantidad       INT            NOT NULL DEFAULT 1,
+    precio_unit    DECIMAL(10,2)  NOT NULL,
+    subtotal       AS (cantidad * precio_unit) PERSISTED,
+    CONSTRAINT PK_TS         PRIMARY KEY (ts_id),
+    CONSTRAINT FK_TS_TRB     FOREIGN KEY (trabajo_id)
+        REFERENCES TRABAJO(trabajo_id)  ON DELETE CASCADE,
+    CONSTRAINT FK_TS_SRV     FOREIGN KEY (servicio_id)
+        REFERENCES SERVICIO(servicio_id),
+    CONSTRAINT CK_TS_CANT    CHECK (cantidad >= 1),
+    CONSTRAINT CK_TS_PRECIO  CHECK (precio_unit >= 0)
+);
+GO
+
+CREATE TABLE TRABAJO_ARCHIVO (
+    ta_id          INT   NOT NULL IDENTITY(1,1),
+    trabajo_id     INT   NOT NULL,
+    archivo_id     INT   NOT NULL,
+    copias         INT   NOT NULL DEFAULT 1,
+    instrucciones  NVARCHAR(MAX),
+    CONSTRAINT PK_TA         PRIMARY KEY (ta_id),
+    CONSTRAINT FK_TA_TRB     FOREIGN KEY (trabajo_id)
+        REFERENCES TRABAJO(trabajo_id)  ON DELETE CASCADE,
+    CONSTRAINT FK_TA_ARH     FOREIGN KEY (archivo_id)
+        REFERENCES ARCHIVO(archivo_id),
+    CONSTRAINT CK_TA_COPIAS  CHECK (copias >= 1)
+);
+GO
+
+CREATE TABLE MAQUINA (
+    maquina_id     INT            NOT NULL IDENTITY(1,1),
+    nombre         NVARCHAR(100)  NOT NULL,
+    descripcion    NVARCHAR(300),
+    tipo           NVARCHAR(50),
+    estado         NVARCHAR(10)   NOT NULL DEFAULT 'ACTIVO',
+    creado_en      DATETIME2      NOT NULL DEFAULT GETDATE(),
+    CONSTRAINT PK_MAQUINA    PRIMARY KEY (maquina_id),
+    CONSTRAINT CK_MAQ_ESTADO CHECK (estado IN ('ACTIVO','INACTIVO'))
+);
+GO
+
+CREATE TABLE COLAMAQUINA (
+    cola_id          INT         NOT NULL IDENTITY(1,1),
+    maquina_id       INT         NOT NULL,
+    trabajo_id       INT         NOT NULL,
+    prioridad        INT         NOT NULL DEFAULT 5,
+    estado           NVARCHAR(15) NOT NULL DEFAULT 'PENDIENTE',
+    inicio_estimado  DATETIME2,
+    fin_estimado     DATETIME2,
+    inicio_real      DATETIME2,
+    fin_real         DATETIME2,
+    creado_en        DATETIME2   NOT NULL DEFAULT GETDATE(),
+    CONSTRAINT PK_COLA        PRIMARY KEY (cola_id),
+    CONSTRAINT FK_COLA_MAQ    FOREIGN KEY (maquina_id) REFERENCES MAQUINA(maquina_id),
+    CONSTRAINT FK_COLA_TRB    FOREIGN KEY (trabajo_id) REFERENCES TRABAJO(trabajo_id),
+    CONSTRAINT CK_COLA_ESTADO CHECK (estado IN ('PENDIENTE','EN_PROCESO','COMPLETADO','CANCELADO')),
+    CONSTRAINT CK_COLA_PRIO   CHECK (prioridad BETWEEN 1 AND 10)
+);
+GO
+
+-- Trigger anti-solapamiento en SQL Server:
+CREATE TRIGGER TRG_COLA_NO_SOLAPAMIENTO
+ON COLAMAQUINA
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF EXISTS (
+        SELECT maquina_id FROM inserted WHERE estado = 'EN_PROCESO'
+    )
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM COLAMAQUINA c
+            JOIN inserted i ON c.maquina_id = i.maquina_id
+            WHERE c.estado = 'EN_PROCESO'
+              AND c.cola_id <> i.cola_id
+        )
+        BEGIN
+            RAISERROR('La máquina ya tiene un trabajo EN_PROCESO', 16, 1);
+            ROLLBACK TRANSACTION;
+        END
+    END
+END;
+GO
+
+CREATE TABLE FACTURA (
+    factura_id     INT            NOT NULL IDENTITY(1,1),
+    trabajo_id     INT            NOT NULL,
+    fecha          DATETIME2      NOT NULL DEFAULT GETDATE(),
+    subtotal       DECIMAL(10,2)  NOT NULL,
+    impuesto       DECIMAL(10,2)  NOT NULL DEFAULT 0.00,
+    total          DECIMAL(10,2)  NOT NULL,
+    estado         NVARCHAR(10)   NOT NULL DEFAULT 'PENDIENTE',
+    creado_en      DATETIME2      NOT NULL DEFAULT GETDATE(),
+    CONSTRAINT PK_FACTURA    PRIMARY KEY (factura_id),
+    CONSTRAINT UQ_FAC_TRB    UNIQUE (trabajo_id),
+    CONSTRAINT FK_FAC_TRB    FOREIGN KEY (trabajo_id) REFERENCES TRABAJO(trabajo_id),
+    CONSTRAINT CK_FAC_ESTADO CHECK (estado IN ('PENDIENTE','PAGADO','ANULADO'))
+);
+GO
+
+CREATE TABLE PAGO (
+    pago_id        INT            NOT NULL IDENTITY(1,1),
+    factura_id     INT            NOT NULL,
+    metodo         NVARCHAR(30)   NOT NULL,
+    monto          DECIMAL(10,2)  NOT NULL,
+    fecha          DATETIME2      NOT NULL DEFAULT GETDATE(),
+    referencia_ext NVARCHAR(100),
+    estado         NVARCHAR(12)   NOT NULL DEFAULT 'COMPLETADO',
+    creado_en      DATETIME2      NOT NULL DEFAULT GETDATE(),
+    CONSTRAINT PK_PAGO       PRIMARY KEY (pago_id),
+    CONSTRAINT FK_PAG_FAC    FOREIGN KEY (factura_id) REFERENCES FACTURA(factura_id),
+    CONSTRAINT CK_PAG_METODO CHECK (metodo IN ('EFECTIVO','TARJETA','TRANSFERENCIA','NEQUI','DAVIPLATA')),
+    CONSTRAINT CK_PAG_MONTO  CHECK (monto > 0),
+    CONSTRAINT CK_PAG_ESTADO CHECK (estado IN ('COMPLETADO','ANULADO','PENDIENTE'))
+);
+GO
+```
+
+#### Paso 4 — Verificar en sqlcmd
+
+```sql
+-- Listar tablas:
+SELECT TABLE_NAME
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_TYPE = 'BASE TABLE'
+ORDER BY TABLE_NAME;
+GO
+
+-- Ver FK creadas:
+SELECT
+    fk.name                AS nombre_fk,
+    tp.name                AS tabla_padre,
+    cp.name                AS columna_padre,
+    tr.name                AS tabla_ref,
+    cr.name                AS columna_ref
+FROM sys.foreign_keys fk
+JOIN sys.foreign_key_columns fkc ON fk.object_id   = fkc.constraint_object_id
+JOIN sys.tables  tp ON fkc.parent_object_id         = tp.object_id
+JOIN sys.columns cp ON fkc.parent_object_id         = cp.object_id
+                    AND fkc.parent_column_id        = cp.column_id
+JOIN sys.tables  tr ON fkc.referenced_object_id     = tr.object_id
+JOIN sys.columns cr ON fkc.referenced_object_id     = cr.object_id
+                    AND fkc.referenced_column_id    = cr.column_id
+ORDER BY tp.name;
+GO
+
+-- Verificar triggers:
+SELECT name, type_desc, parent_class_desc
+FROM sys.triggers
+WHERE parent_class_desc = 'OBJECT_OR_COLUMN';
+GO
+```
+
+---
+
+### 6.2 DBeaver con MS SQL Server
+
+#### Paso 1 — Nueva conexión SQL Server
+
+```
+Database → New Database Connection
+→ Seleccionar: SQL Server → Next
+```
+
+| Campo | Valor |
+|---|---|
+| Host | `localhost` |
+| Port | `1433` |
+| Database | `master` *(conexión inicial)* |
+| Authentication | SQL Server Authentication |
+| User | `sa` |
+| Password | tu contraseña |
+
+```
+→ "Test Connection" → OK
+→ "Finish"
+```
+
+#### Paso 2 — Crear la base de datos desde DBeaver
+
+```
+Database Navigator:
+→ Expandir la conexión SQL Server
+→ Clic derecho sobre "Databases"
+→ "Create New Database"
+   ┌──────────────────────────────────┐
+   │ Name: printlab                   │
+   └──────────────────────────────────┘
+→ OK
+```
+
+#### Paso 3 — Ejecutar el DDL
+
+```
+→ Clic derecho sobre "printlab"
+→ SQL Editor → "New SQL Script"
+→ Pegar el DDL T-SQL completo (incluyendo los GO al final de cada bloque)
+→ Ctrl + Alt + X
+
+NOTA IMPORTANTE en SQL Server:
+  DBeaver no procesa "GO" igual que SSMS.
+  Si hay error, ejecutar el script por bloques:
+  Seleccionar un bloque → Ctrl + Enter (ejecuta solo lo seleccionado)
+```
+
+#### Paso 4 — Visualizar diagrama en DBeaver
+
+```
+Database Navigator:
+→ Expandir: printlab → dbo → Tables
+→ Seleccionar todas (Ctrl + A)
+→ Clic derecho → "View Diagram"
+→ El ER Diagram muestra todas las tablas con FK visualizadas
+```
+
+---
+
+### 6.3 SQL Server Management Studio (SSMS)
+
+#### Paso 1 — Conectarse al servidor
+
+```
+Abrir SSMS → Pantalla "Connect to Server":
+┌──────────────────────────────────────────────────┐
+│ Server type:     Database Engine                 │
+│ Server name:     localhost                       │
+│                  (o .\SQLEXPRESS si es Express)  │
+│ Authentication:  SQL Server Authentication       │
+│ Login:           sa                              │
+│ Password:        ••••••••                        │
+└──────────────────────────────────────────────────┘
+→ "Connect"
+```
+
+#### Paso 2 — Crear la base de datos desde la GUI
+
+```
+Object Explorer (panel izquierdo):
+→ Expandir el servidor
+→ Clic derecho sobre "Databases"
+→ "New Database..."
+
+  Pestaña "General":
+  ┌──────────────────────────────────────────────────┐
+  │ Database name: printlab                          │
+  │ Owner:         <default>  (o 'sa')               │
+  └──────────────────────────────────────────────────┘
+
+  Pestaña "Options":
+  ┌──────────────────────────────────────────────────┐
+  │ Collation:         Modern_Spanish_CI_AS          │
+  │ Recovery model:    Simple                        │
+  │ Compatibility:     (versión actual del servidor) │
+  └──────────────────────────────────────────────────┘
+
+→ "OK"
+```
+
+#### Paso 3 — Abrir nueva consulta y ejecutar el DDL
+
+```
+Object Explorer:
+→ Clic derecho sobre "printlab"
+→ "New Query"
+
+En el editor que se abre:
+→ Verificar en el selector de BD (arriba) que dice "printlab"
+→ Pegar el DDL T-SQL completo
+→ Ejecutar: F5  (o botón "Execute" en la barra de herramientas)
+
+Panel inferior "Messages" debe mostrar:
+  "Command(s) completed successfully."
+
+Si hay algún error:
+  El panel señalará la línea exacta con el mensaje del motor.
+  Corregir y volver a ejecutar desde ese punto.
+```
+
+#### Paso 4 — Crear el Diagrama de BD en SSMS
+
+```
+Object Explorer:
+→ Expandir: printlab → "Database Diagrams"
+→ Clic derecho → "New Database Diagram"
+
+Si aparece el mensaje:
+  "This database does not have one or more of the support objects
+   required to use database diagramming..."
+→ Click "Yes" para instalar los objetos de soporte
+
+Cuadro "Add Table":
+→ Seleccionar TODAS las tablas (Ctrl + A)
+→ Click "Add"
+→ Click "Close"
+
+SSMS genera el diagrama automáticamente.
+Organizar las tablas arrastrándolas.
+
+Guardar el diagrama:
+→ Ctrl + S
+→ Nombre: DER_PrintLab_SQLServer
+→ "OK"
+
+Exportar como imagen:
+→ Clic derecho en el área del diagrama
+→ "Copy Diagram to Clipboard"
+  (pegar en Paint o Word para guardar como imagen)
+O bien:
+→ File → Print → "Microsoft Print to PDF"
+```
+
+---
+
+## 7. Oracle
+
+### 7.1 Editor del Propio Motor (SQL*Plus)
+
+#### Paso 1 — Conectar con SQL*Plus como SYSDBA
+
+```bash
+# Desde terminal / CMD:
+sqlplus / as sysdba
+
+# O con conexión de red:
+sqlplus sys/password@localhost:1521/ORCL as sysdba
+
+# Prompt esperado: SQL>
+```
+
+#### Paso 2 — Crear el usuario/schema PrintLab
+
+```sql
+-- En Oracle 12c+ (Multitenant), usar el PDB correcto:
+SHOW CON_NAME;
+-- Si aparece CDB$ROOT, conectarse al PDB:
+ALTER SESSION SET CONTAINER = XEPDB1;
+-- (o el nombre de tu PDB: ORCLPDB, XEPDB1, etc.)
+
+-- Crear el usuario (= schema en Oracle):
+CREATE USER printlab
+    IDENTIFIED BY "PrintLab2024#"
+    DEFAULT TABLESPACE  USERS
+    TEMPORARY TABLESPACE TEMP
+    QUOTA UNLIMITED ON USERS;
+
+-- Otorgar privilegios mínimos:
+GRANT CONNECT, RESOURCE TO printlab;
+GRANT CREATE SESSION,
+      CREATE TABLE,
+      CREATE SEQUENCE,
+      CREATE TRIGGER,
+      CREATE VIEW,
+      CREATE PROCEDURE
+TO printlab;
+
+-- Conectarse como el nuevo usuario:
+CONNECT printlab/"PrintLab2024#"@localhost:1521/XEPDB1
+
+-- Confirmar:
+SHOW USER;
+-- Resultado: USER is "PRINTLAB"
+```
+
+#### Paso 3 — Crear Sequences y Tablas en Oracle
+
+```sql
+-- ============================================================
+-- PRINTLAB — DDL Oracle
+-- ============================================================
+
+-- ==== SEQUENCES (reemplazan al AUTO_INCREMENT) ====
+CREATE SEQUENCE SEQ_CLIENTE   START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE;
+CREATE SEQUENCE SEQ_TRABAJO   START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE;
+CREATE SEQUENCE SEQ_SERVICIO  START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE;
+CREATE SEQUENCE SEQ_ARCHIVO   START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE;
+CREATE SEQUENCE SEQ_TS        START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE;
+CREATE SEQUENCE SEQ_TA        START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE;
+CREATE SEQUENCE SEQ_MAQUINA   START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE;
+CREATE SEQUENCE SEQ_COLA      START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE;
+CREATE SEQUENCE SEQ_FACTURA   START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE;
+CREATE SEQUENCE SEQ_PAGO      START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- ==== TABLAS ====
+
+CREATE TABLE CLIENTE (
+    CLIENTE_ID     NUMBER(10)    NOT NULL,
+    TIPO_DOC       VARCHAR2(5)   NOT NULL,
+    NUM_DOC        VARCHAR2(20)  NOT NULL,
+    NOMBRE         VARCHAR2(150) NOT NULL,
+    TELEFONO       VARCHAR2(20),
+    EMAIL          VARCHAR2(120),
+    ESTADO         VARCHAR2(10)  DEFAULT 'ACTIVO' NOT NULL,
+    CREADO_EN      TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,
+    ACTUALIZADO_EN TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT PK_CLIENTE    PRIMARY KEY (CLIENTE_ID),
+    CONSTRAINT UQ_CLI_DOC    UNIQUE (NUM_DOC),
+    CONSTRAINT CK_CLI_TDOC   CHECK (TIPO_DOC IN ('CC','NIT','CE','PAS')),
+    CONSTRAINT CK_CLI_ESTADO CHECK (ESTADO IN ('ACTIVO','INACTIVO'))
+);
+
+CREATE TABLE TRABAJO (
+    TRABAJO_ID     NUMBER(10)    NOT NULL,
+    CLIENTE_ID     NUMBER(10)    NOT NULL,
+    NOMBRE         VARCHAR2(200) NOT NULL,
+    DESCRIPCION    CLOB,
+    ESTADO         VARCHAR2(15)  DEFAULT 'PENDIENTE' NOT NULL,
+    FECHA_INICIO   TIMESTAMP,
+    FECHA_FIN      TIMESTAMP,
+    CREADO_EN      TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,
+    ACTUALIZADO_EN TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT PK_TRABAJO    PRIMARY KEY (TRABAJO_ID),
+    CONSTRAINT FK_TRB_CLI    FOREIGN KEY (CLIENTE_ID)
+        REFERENCES CLIENTE(CLIENTE_ID),
+    CONSTRAINT CK_TRB_ESTADO CHECK (ESTADO IN ('PENDIENTE','EN_PROCESO','COMPLETADO','CANCELADO'))
+);
+
+CREATE TABLE SERVICIO (
+    SERVICIO_ID    NUMBER(10)    NOT NULL,
+    NOMBRE         VARCHAR2(100) NOT NULL,
+    DESCRIPCION    VARCHAR2(300),
+    PRECIO_BASE    NUMBER(10,2)  NOT NULL,
+    ESTADO         VARCHAR2(10)  DEFAULT 'ACTIVO' NOT NULL,
+    CONSTRAINT PK_SERVICIO    PRIMARY KEY (SERVICIO_ID),
+    CONSTRAINT UQ_SRV_NOMBRE  UNIQUE (NOMBRE),
+    CONSTRAINT CK_SRV_PRECIO  CHECK (PRECIO_BASE >= 0),
+    CONSTRAINT CK_SRV_ESTADO  CHECK (ESTADO IN ('ACTIVO','INACTIVO'))
+);
+
+CREATE TABLE ARCHIVO (
+    ARCHIVO_ID     NUMBER(10)    NOT NULL,
+    NOMBRE         VARCHAR2(200) NOT NULL,
+    EXTENSION      VARCHAR2(10),
+    RUTA           VARCHAR2(500),
+    TAMANIO_KB     NUMBER(10),
+    ESTADO         VARCHAR2(10)  DEFAULT 'ACTIVO' NOT NULL,
+    CREADO_EN      TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT PK_ARCHIVO    PRIMARY KEY (ARCHIVO_ID),
+    CONSTRAINT CK_ARH_ESTADO CHECK (ESTADO IN ('ACTIVO','INACTIVO'))
+);
+
+CREATE TABLE TRABAJO_SERVICIO (
+    TS_ID          NUMBER(10)    NOT NULL,
+    TRABAJO_ID     NUMBER(10)    NOT NULL,
+    SERVICIO_ID    NUMBER(10)    NOT NULL,
+    CANTIDAD       NUMBER(5)     DEFAULT 1 NOT NULL,
+    PRECIO_UNIT    NUMBER(10,2)  NOT NULL,
+    SUBTOTAL       NUMBER(10,2)  GENERATED ALWAYS AS (CANTIDAD * PRECIO_UNIT) VIRTUAL,
+    CONSTRAINT PK_TS         PRIMARY KEY (TS_ID),
+    CONSTRAINT FK_TS_TRB     FOREIGN KEY (TRABAJO_ID)  REFERENCES TRABAJO(TRABAJO_ID)  ON DELETE CASCADE,
+    CONSTRAINT FK_TS_SRV     FOREIGN KEY (SERVICIO_ID) REFERENCES SERVICIO(SERVICIO_ID),
+    CONSTRAINT CK_TS_CANT    CHECK (CANTIDAD >= 1),
+    CONSTRAINT CK_TS_PRECIO  CHECK (PRECIO_UNIT >= 0)
+);
+
+CREATE TABLE TRABAJO_ARCHIVO (
+    TA_ID          NUMBER(10)    NOT NULL,
+    TRABAJO_ID     NUMBER(10)    NOT NULL,
+    ARCHIVO_ID     NUMBER(10)    NOT NULL,
+    COPIAS         NUMBER(5)     DEFAULT 1 NOT NULL,
+    INSTRUCCIONES  CLOB,
+    CONSTRAINT PK_TA         PRIMARY KEY (TA_ID),
+    CONSTRAINT FK_TA_TRB     FOREIGN KEY (TRABAJO_ID) REFERENCES TRABAJO(TRABAJO_ID) ON DELETE CASCADE,
+    CONSTRAINT FK_TA_ARH     FOREIGN KEY (ARCHIVO_ID) REFERENCES ARCHIVO(ARCHIVO_ID),
+    CONSTRAINT CK_TA_COPIAS  CHECK (COPIAS >= 1)
+);
+
+CREATE TABLE MAQUINA (
+    MAQUINA_ID     NUMBER(10)    NOT NULL,
+    NOMBRE         VARCHAR2(100) NOT NULL,
+    DESCRIPCION    VARCHAR2(300),
+    TIPO           VARCHAR2(50),
+    ESTADO         VARCHAR2(10)  DEFAULT 'ACTIVO' NOT NULL,
+    CREADO_EN      TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT PK_MAQUINA    PRIMARY KEY (MAQUINA_ID),
+    CONSTRAINT CK_MAQ_ESTADO CHECK (ESTADO IN ('ACTIVO','INACTIVO'))
+);
+
+CREATE TABLE COLAMAQUINA (
+    COLA_ID          NUMBER(10)    NOT NULL,
+    MAQUINA_ID       NUMBER(10)    NOT NULL,
+    TRABAJO_ID       NUMBER(10)    NOT NULL,
+    PRIORIDAD        NUMBER(2)     DEFAULT 5 NOT NULL,
+    ESTADO           VARCHAR2(15)  DEFAULT 'PENDIENTE' NOT NULL,
+    INICIO_ESTIMADO  TIMESTAMP,
+    FIN_ESTIMADO     TIMESTAMP,
+    INICIO_REAL      TIMESTAMP,
+    FIN_REAL         TIMESTAMP,
+    CREADO_EN        TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT PK_COLA        PRIMARY KEY (COLA_ID),
+    CONSTRAINT FK_COLA_MAQ    FOREIGN KEY (MAQUINA_ID) REFERENCES MAQUINA(MAQUINA_ID),
+    CONSTRAINT FK_COLA_TRB    FOREIGN KEY (TRABAJO_ID) REFERENCES TRABAJO(TRABAJO_ID),
+    CONSTRAINT CK_COLA_ESTADO CHECK (ESTADO IN ('PENDIENTE','EN_PROCESO','COMPLETADO','CANCELADO')),
+    CONSTRAINT CK_COLA_PRIO   CHECK (PRIORIDAD BETWEEN 1 AND 10)
+);
+
+CREATE TABLE FACTURA (
+    FACTURA_ID     NUMBER(10)    NOT NULL,
+    TRABAJO_ID     NUMBER(10)    NOT NULL,
+    FECHA          TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,
+    SUBTOTAL       NUMBER(10,2)  NOT NULL,
+    IMPUESTO       NUMBER(10,2)  DEFAULT 0 NOT NULL,
+    TOTAL          NUMBER(10,2)  NOT NULL,
+    ESTADO         VARCHAR2(10)  DEFAULT 'PENDIENTE' NOT NULL,
+    CREADO_EN      TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT PK_FACTURA    PRIMARY KEY (FACTURA_ID),
+    CONSTRAINT UQ_FAC_TRB    UNIQUE (TRABAJO_ID),
+    CONSTRAINT FK_FAC_TRB    FOREIGN KEY (TRABAJO_ID) REFERENCES TRABAJO(TRABAJO_ID),
+    CONSTRAINT CK_FAC_ESTADO CHECK (ESTADO IN ('PENDIENTE','PAGADO','ANULADO'))
+);
+
+CREATE TABLE PAGO (
+    PAGO_ID        NUMBER(10)    NOT NULL,
+    FACTURA_ID     NUMBER(10)    NOT NULL,
+    METODO         VARCHAR2(30)  NOT NULL,
+    MONTO          NUMBER(10,2)  NOT NULL,
+    FECHA          TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,
+    REFERENCIA_EXT VARCHAR2(100),
+    ESTADO         VARCHAR2(12)  DEFAULT 'COMPLETADO' NOT NULL,
+    CREADO_EN      TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT PK_PAGO       PRIMARY KEY (PAGO_ID),
+    CONSTRAINT FK_PAG_FAC    FOREIGN KEY (FACTURA_ID) REFERENCES FACTURA(FACTURA_ID),
+    CONSTRAINT CK_PAG_METODO CHECK (METODO IN ('EFECTIVO','TARJETA','TRANSFERENCIA','NEQUI','DAVIPLATA')),
+    CONSTRAINT CK_PAG_MONTO  CHECK (MONTO > 0),
+    CONSTRAINT CK_PAG_ESTADO CHECK (ESTADO IN ('COMPLETADO','ANULADO','PENDIENTE'))
+);
+
+COMMIT;
+```
+
+#### Paso 4 — Crear los Triggers de Auto-Incremento
+
+```sql
+-- Trigger para cada tabla (patrón uniforme):
+
+CREATE OR REPLACE TRIGGER TRG_CLIENTE_AI
+BEFORE INSERT ON CLIENTE FOR EACH ROW
+BEGIN
+    IF :NEW.CLIENTE_ID IS NULL THEN
+        :NEW.CLIENTE_ID := SEQ_CLIENTE.NEXTVAL;
+    END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER TRG_TRABAJO_AI
+BEFORE INSERT ON TRABAJO FOR EACH ROW
+BEGIN
+    IF :NEW.TRABAJO_ID IS NULL THEN
+        :NEW.TRABAJO_ID := SEQ_TRABAJO.NEXTVAL;
+    END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER TRG_SERVICIO_AI
+BEFORE INSERT ON SERVICIO FOR EACH ROW
+BEGIN
+    IF :NEW.SERVICIO_ID IS NULL THEN
+        :NEW.SERVICIO_ID := SEQ_SERVICIO.NEXTVAL;
+    END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER TRG_ARCHIVO_AI
+BEFORE INSERT ON ARCHIVO FOR EACH ROW
+BEGIN
+    IF :NEW.ARCHIVO_ID IS NULL THEN
+        :NEW.ARCHIVO_ID := SEQ_ARCHIVO.NEXTVAL;
+    END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER TRG_TS_AI
+BEFORE INSERT ON TRABAJO_SERVICIO FOR EACH ROW
+BEGIN
+    IF :NEW.TS_ID IS NULL THEN :NEW.TS_ID := SEQ_TS.NEXTVAL; END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER TRG_TA_AI
+BEFORE INSERT ON TRABAJO_ARCHIVO FOR EACH ROW
+BEGIN
+    IF :NEW.TA_ID IS NULL THEN :NEW.TA_ID := SEQ_TA.NEXTVAL; END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER TRG_MAQUINA_AI
+BEFORE INSERT ON MAQUINA FOR EACH ROW
+BEGIN
+    IF :NEW.MAQUINA_ID IS NULL THEN
+        :NEW.MAQUINA_ID := SEQ_MAQUINA.NEXTVAL;
+    END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER TRG_COLA_AI
+BEFORE INSERT ON COLAMAQUINA FOR EACH ROW
+BEGIN
+    IF :NEW.COLA_ID IS NULL THEN :NEW.COLA_ID := SEQ_COLA.NEXTVAL; END IF;
+END;
+/
+
+-- Trigger anti-solapamiento en Oracle:
+CREATE OR REPLACE TRIGGER TRG_COLA_NO_SOLAPAMIENTO
+BEFORE INSERT OR UPDATE ON COLAMAQUINA FOR EACH ROW
+DECLARE
+    v_cnt NUMBER;
+BEGIN
+    IF :NEW.ESTADO = 'EN_PROCESO' THEN
+        SELECT COUNT(*) INTO v_cnt
+        FROM COLAMAQUINA
+        WHERE MAQUINA_ID = :NEW.MAQUINA_ID
+          AND ESTADO     = 'EN_PROCESO'
+          AND COLA_ID   <> NVL(:NEW.COLA_ID, -1);
+        IF v_cnt > 0 THEN
+            RAISE_APPLICATION_ERROR(-20001,
+                'La máquina ' || :NEW.MAQUINA_ID || ' ya tiene un trabajo EN_PROCESO');
+        END IF;
+    END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER TRG_FACTURA_AI
+BEFORE INSERT ON FACTURA FOR EACH ROW
+BEGIN
+    IF :NEW.FACTURA_ID IS NULL THEN
+        :NEW.FACTURA_ID := SEQ_FACTURA.NEXTVAL;
+    END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER TRG_PAGO_AI
+BEFORE INSERT ON PAGO FOR EACH ROW
+BEGIN
+    IF :NEW.PAGO_ID IS NULL THEN
+        :NEW.PAGO_ID := SEQ_PAGO.NEXTVAL;
+    END IF;
+END;
+/
+
+COMMIT;
+```
+
+#### Paso 5 — Verificar en SQL*Plus
+
+```sql
+-- Listar tablas del usuario actual:
+SELECT TABLE_NAME FROM USER_TABLES ORDER BY TABLE_NAME;
+
+-- Ver sequences:
+SELECT SEQUENCE_NAME, LAST_NUMBER
+FROM USER_SEQUENCES
+ORDER BY SEQUENCE_NAME;
+
+-- Ver constraints FK:
+SELECT
+    c.CONSTRAINT_NAME,
+    c.TABLE_NAME,
+    r.TABLE_NAME AS TABLA_REF
+FROM USER_CONSTRAINTS c
+JOIN USER_CONSTRAINTS r
+    ON c.R_CONSTRAINT_NAME = r.CONSTRAINT_NAME
+WHERE c.CONSTRAINT_TYPE = 'R'
+ORDER BY c.TABLE_NAME;
+
+-- Ver triggers:
+SELECT TRIGGER_NAME, TRIGGERING_EVENT, TABLE_NAME, STATUS
+FROM USER_TRIGGERS
+ORDER BY TABLE_NAME;
+```
+
+---
+
+### 7.2 DBeaver con Oracle
+
+#### Paso 1 — Nueva conexión Oracle
+
+```
+Database → New Database Connection
+→ Seleccionar: Oracle → Next
+
+NOTA: Si es la primera vez, DBeaver descargará el
+driver JDBC de Oracle automáticamente. Aceptar la descarga.
+```
+
+| Campo | Valor |
+|---|---|
+| Connection Type | Service Name |
+| Host | `localhost` |
+| Port | `1521` |
+| Service | `XEPDB1` *(o ORCL / nombre de tu PDB)* |
+| Username | `printlab` |
+| Password | `PrintLab2024#` |
+
+```
+→ "Test Connection"
+   Si falla con error de driver: Click "Download" en el aviso
+→ "Finish"
+```
+
+#### Paso 2 — Ejecutar el DDL desde DBeaver
+
+```
+IMPORTANTE: En Oracle, ejecutar en este orden:
+  1. Primero: SEQUENCES
+  2. Luego: TABLAS (en orden por dependencias FK)
+  3. Al final: TRIGGERS
+
+→ Clic derecho sobre la conexión printlab
+→ SQL Editor → "New SQL Script"
+→ Pegar el DDL Oracle completo (sequences + tablas + triggers)
+→ Ctrl + Alt + X
+
+Si hay error de compilación en triggers:
+  → Dividir el script: primero solo tablas, luego solo triggers
+  → Ejecutar cada parte por separado
+```
+
+#### Paso 3 — Visualizar diagrama en DBeaver
+
+```
+Database Navigator:
+→ Expandir: conexión printlab → printlab → Tables
+→ Seleccionar todas (Ctrl + A)
+→ Clic derecho → "View Diagram"
+→ El diagrama muestra las 10 tablas con todas las FK
+
+Para ver también los Triggers y Sequences:
+→ Expandir: printlab → Triggers (ver la lista)
+→ Expandir: printlab → Sequences (ver los 10 SEQ_*)
+```
+
+---
+
+### 7.3 Oracle SQL Developer
+
+#### Paso 1 — Crear la conexión
+
+```
+Abrir Oracle SQL Developer
+Panel izquierdo → "Connections"
+→ Click ícono "+" (New / Select Database Connection)
+
+  ┌──────────────────────────────────────────────────┐
+  │ Connection Name: PrintLab_Local                  │
+  │ Username:        printlab                        │
+  │ Password:        PrintLab2024#                   │
+  │ ✔ Save Password                                  │
+  │                                                  │
+  │ Connection Type: Basic                           │
+  │ Hostname:        localhost                       │
+  │ Port:            1521                            │
+  │ ○ SID     ● Service name: XEPDB1                │
+  └──────────────────────────────────────────────────┘
+
+→ Click "Test"
+   Panel inferior debe mostrar: "Status: Success"
+→ Click "Connect"
+```
+
+#### Paso 2 — Abrir SQL Worksheet y ejecutar el DDL
+
+```
+→ En el panel de conexiones:
+   Clic derecho sobre "PrintLab_Local"
+   → "Open SQL Worksheet"
+
+En el Worksheet:
+→ Pegar el DDL Oracle completo (sequences + tablas + triggers)
+
+Opciones de ejecución:
+  F5                = Ejecutar como Script (todo el archivo)
+  Ctrl + Enter      = Ejecutar sentencia actual
+  Ctrl + Shift + Enter = Ejecutar sentencia seleccionada
+
+→ Usar F5 para ejecutar todo de una vez.
+
+Panel inferior "Script Output" mostrará:
+  Sequence SEQ_CLIENTE created.
+  Sequence SEQ_TRABAJO created.
+  ...
+  Table CLIENTE created.
+  Table TRABAJO created.
+  ...
+  Trigger TRG_CLIENTE_AI compiled.
+  ...
+```
+
+#### Paso 3 — Navegar el modelo en SQL Developer
+
+```
+Panel izquierdo (conexión PrintLab_Local):
+→ Expandir "Tables (Filtered)"
+   → Aquí aparecen las 10 tablas
+
+Clic en una tabla (ej: COLAMAQUINA):
+  Panel derecho → Pestaña "Columns": muestra columnas y tipos
+  Panel derecho → Pestaña "Constraints": muestra PK, FK, CHECK
+  Panel derecho → Pestaña "Triggers": muestra trigger asociado
+  Panel derecho → Pestaña "Data": ver/editar registros
+
+→ Expandir "Sequences": muestra los 10 SEQ_*
+→ Expandir "Triggers": muestra todos los triggers creados
+```
+
+#### Paso 4 — Generar el Diagrama ER con el Data Modeler
+
+```
+Método A — Desde el menú principal:
+──────────────────────────────────────
+Menú: View → Data Modeler → Browser
+→ Se abre el panel "Data Modeler Browser"
+→ Clic derecho → "New Design"
+→ Menú: File → Import → Data Dictionary...
+  · Seleccionar conexión: PrintLab_Local → Next
+  · Seleccionar schema: PRINTLAB
+  · ✔ Marcar todas las tablas
+  → Next → Finish
+→ Se genera el diagrama automáticamente en el canvas
+→ Las relaciones FK se muestran como líneas entre tablas
+
+Método B — Arrastrar desde el Object Browser:
+─────────────────────────────────────────────
+→ Expandir conexión → Tables
+→ Seleccionar todas las tablas (Ctrl + A)
+→ Clic derecho → "Open in Data Modeler"
+```
+
+#### Paso 5 — Exportar el diagrama
+
+```
+Con el canvas del Data Modeler abierto:
+→ Menú: File → Export → Export Diagram as Image...
+   ┌────────────────────────────────────────────┐
+   │ Format:   PNG                              │
+   │ Scale:    100%  (o 150% para más detalle)  │
+   │ File:     DER_PrintLab_Oracle.png          │
+   └────────────────────────────────────────────┘
+→ Save
+```
+
+---
+
+## 8. Tabla Comparativa entre Motores
+
+| Característica | MySQL | PostgreSQL | MS SQL Server | Oracle |
+|---|---|---|---|---|
+| **Auto-incremento** | `AUTO_INCREMENT` | `GENERATED ALWAYS AS IDENTITY` / `SERIAL` | `IDENTITY(1,1)` | `SEQUENCE` + `TRIGGER` |
+| **Columna calculada** | `GENERATED ALWAYS AS (...) STORED` | `GENERATED ALWAYS AS (...) STORED` | `AS (...) PERSISTED` | `GENERATED ALWAYS AS (...) VIRTUAL` |
+| **Tipo texto corto** | `VARCHAR(n)` | `VARCHAR(n)` | `NVARCHAR(n)` | `VARCHAR2(n)` |
+| **Tipo texto largo** | `TEXT` / `LONGTEXT` | `TEXT` | `NVARCHAR(MAX)` | `CLOB` |
+| **Fecha+hora** | `DATETIME` | `TIMESTAMP` | `DATETIME2` | `TIMESTAMP` |
+| **Booleano** | `TINYINT(1)` | `BOOLEAN` | `BIT` | `NUMBER(1)` CHECK |
+| **Fecha actual** | `CURRENT_TIMESTAMP` | `CURRENT_TIMESTAMP` | `GETDATE()` | `SYSTIMESTAMP` |
+| **Decimal** | `DECIMAL(p,s)` | `NUMERIC(p,s)` | `DECIMAL(p,s)` | `NUMBER(p,s)` |
+| **Trigger lenguaje** | SQL + DELIMITER | PL/pgSQL | T-SQL | PL/SQL |
+| **Schema = BD** | Sí (coinciden) | Schema dentro de BD | Schema dentro de BD | Usuario = Schema |
+| **Puerto por defecto** | 3306 | 5432 | 1433 | 1521 |
+| **CLI nativa** | `mysql` | `psql` | `sqlcmd` | `SQL*Plus` |
+| **GUI nativa** | MySQL Workbench | PgAdmin 4 | SSMS | SQL Developer |
+| **GUI universal** | DBeaver | DBeaver | DBeaver | DBeaver |
+
+---
+
+### Resumen de Tablas del Modelo PrintLab
+
+| # | Tabla | Filas Estimadas | Relaciones FK |
+|---|---|---|---|
+| 1 | `CLIENTE` | Maestro | — |
+| 2 | `TRABAJO` | Transaccional | → CLIENTE |
+| 3 | `SERVICIO` | Catálogo | — |
+| 4 | `ARCHIVO` | Catálogo | — |
+| 5 | `TRABAJO_SERVICIO` | Detalle (pivote) | → TRABAJO, SERVICIO |
+| 6 | `TRABAJO_ARCHIVO` | Detalle (pivote) | → TRABAJO, ARCHIVO |
+| 7 | `MAQUINA` | Maestro | — |
+| 8 | `COLAMAQUINA` | Transaccional | → MAQUINA, TRABAJO |
+| 9 | `FACTURA` | Transaccional | → TRABAJO (1:1) |
+| 10 | `PAGO` | Detalle | → FACTURA |
+
+**Total: 10 tablas | 11 FK | 4 motores | 3 herramientas por motor**
+
+---
+
+*Documento elaborado para la asignatura de Bases de Datos — Ingeniería*
+*PrintLab — Centro de Copiado e Impresión*
+*Riohacha, La Guajira, Colombia*
+
