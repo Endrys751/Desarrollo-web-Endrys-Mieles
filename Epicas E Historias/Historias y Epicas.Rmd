@@ -1,0 +1,304 @@
+---
+title: "Historias e Epicas PrintLab"
+author: "Endrys Mieles"
+date: "2026-03-24"
+output: html_document
+---
+
+# 1. Introducción
+
+Este documento presenta el **Product Backlog del sistema PrintLab**, el cual incluye las **épicas e historias de usuario** necesarias para desarrollar el sistema de gestión de un centro de impresión.
+
+El sistema permitirá administrar:
+
+- Clientes
+- Trabajos de impresión
+- Servicios
+- Máquinas
+- Cola de impresión
+- Facturación
+- Pagos
+- Auditoría y reportes
+
+## Roles del sistema
+
+Los usuarios que interactúan con el sistema son:
+
+| Rol | Descripción |
+|----|----|
+Administrador | Gestiona configuración, servicios, máquinas y usuarios |
+Operador | Registra trabajos, procesa impresiones y pagos |
+Supervisor | Supervisa la operación diaria |
+Auditor | Consulta información y reportes |
+
+---
+
+# 2. Product Backlog
+
+| ID | Épica | Historia de Usuario | Rol | Prioridad (MoSCoW) | Story Points |
+|----|------|--------------------|----|----|----|
+HU-01 | Gestión de Clientes | Registrar cliente | Administrador | Must | 5 |
+HU-02 | Gestión de Clientes | Consultar clientes | Supervisor | Should | 3 |
+HU-03 | Gestión de Trabajos | Crear trabajo de impresión | Operador | Must | 8 |
+HU-04 | Gestión de Trabajos | Actualizar estado del trabajo | Operador | Must | 5 |
+HU-05 | Gestión de Servicios | Registrar servicio | Administrador | Must | 3 |
+HU-06 | Gestión de Máquinas | Registrar máquina | Administrador | Should | 5 |
+HU-07 | Cola de Impresión | Agregar trabajo a cola de máquina | Operador | Must | 8 |
+HU-08 | Cola de Impresión | Iniciar procesamiento en máquina | Operador | Must | 5 |
+HU-09 | Facturación | Generar factura | Operador | Must | 5 |
+HU-10 | Pagos | Registrar pago | Operador | Must | 5 |
+HU-11 | Auditoría | Consultar reportes del sistema | Auditor | Should | 8 |
+
+---
+
+# 3. Épicas e Historias de Usuario
+
+---
+
+# Épica 1: Gestión de Clientes
+
+Permite administrar la información de los clientes del centro de impresión.
+
+## HU-01 Registrar Cliente
+
+**Como:** Administrador  
+**Quiero:** registrar un cliente  
+**Para:** poder asociar trabajos de impresión a ese cliente
+
+**Prioridad:** Must  
+**Story Points:** 5
+
+### Criterios de Aceptación
+
+- El sistema debe permitir registrar:
+  - tipo de documento
+  - número de documento
+  - nombre
+  - teléfono
+  - correo
+- No se deben permitir documentos duplicados
+- El cliente se registra como **ACTIVO**
+
+### Definition of Done
+
+- Formulario funcional
+- Validación de campos
+- Registro guardado en base de datos
+- Pruebas básicas completadas
+
+---
+
+## HU-02 Consultar Clientes
+
+**Como:** Supervisor  
+**Quiero:** consultar clientes registrados  
+**Para:** revisar su información
+
+**Prioridad:** Should  
+**Story Points:** 3
+
+### Criterios de Aceptación
+
+- Búsqueda por nombre
+- Búsqueda por documento
+- Visualización de estado del cliente
+
+### Definition of Done
+
+- Tabla de clientes visible
+- Filtros funcionando
+- Consulta conectada a la base de datos
+
+---
+
+# Épica 2: Gestión de Trabajos
+
+Permite gestionar los trabajos de impresión solicitados por los clientes.
+
+## HU-03 Crear Trabajo
+
+**Como:** Operador  
+**Quiero:** registrar un trabajo de impresión  
+**Para:** iniciar su proceso
+
+**Prioridad:** Must  
+**Story Points:** 8
+
+### Criterios de Aceptación
+
+- Debe asociarse a un cliente
+- Debe incluir descripción del trabajo
+- Estado inicial **PENDIENTE**
+
+### Definition of Done
+
+- Formulario operativo
+- Trabajo guardado correctamente
+- Pruebas básicas completadas
+
+---
+
+## HU-04 Actualizar Estado del Trabajo
+
+**Como:** Operador  
+**Quiero:** cambiar el estado del trabajo  
+**Para:** reflejar su progreso
+
+**Prioridad:** Must  
+**Story Points:** 5
+
+### Estados permitidos
+
+- PENDIENTE
+- EN_PROCESO
+- COMPLETADO
+- CANCELADO
+
+### Definition of Done
+
+- Cambio de estado funcional
+- Registro actualizado en base de datos
+
+---
+
+# Épica 3: Gestión de Servicios
+
+Permite definir los servicios disponibles en el centro de impresión.
+
+## HU-05 Registrar Servicio
+
+**Como:** Administrador  
+**Quiero:** registrar servicios  
+**Para:** establecer precios de impresión
+
+**Prioridad:** Must  
+**Story Points:** 3
+
+### Criterios de aceptación
+
+- Registrar nombre del servicio
+- Registrar precio base
+- Servicio activo por defecto
+
+---
+
+# Épica 4: Gestión de Máquinas
+
+Permite administrar las impresoras disponibles.
+
+## HU-06 Registrar Máquina
+
+**Como:** Administrador  
+**Quiero:** registrar máquinas  
+**Para:** asignar trabajos de impresión
+
+**Prioridad:** Should  
+**Story Points:** 5
+
+### Estados de máquina
+
+- ACTIVA
+- MANTENIMIENTO
+- INACTIVA
+
+---
+
+# Épica 5: Cola de Impresión
+
+Permite organizar el orden de ejecución de trabajos.
+
+## HU-07 Agregar Trabajo a Cola
+
+**Como:** Operador  
+**Quiero:** agregar trabajos a la cola de una máquina  
+**Para:** controlar el orden de impresión
+
+**Prioridad:** Must  
+**Story Points:** 8
+
+### Criterios de aceptación
+
+- Asociar trabajo a máquina
+- Asignar prioridad
+- Registrar estado inicial
+
+---
+
+## HU-08 Procesar Trabajo
+
+**Como:** Operador  
+**Quiero:** iniciar la impresión  
+**Para:** ejecutar el trabajo
+
+### Criterios de aceptación
+
+- Solo un trabajo en proceso por máquina
+- Registrar hora de inicio
+- Registrar hora de finalización
+
+---
+
+# Épica 6: Facturación
+
+Permite generar cobros por los servicios prestados.
+
+## HU-09 Generar Factura
+
+**Como:** Operador  
+**Quiero:** generar una factura  
+**Para:** cobrar el servicio realizado
+
+### Criterios de aceptación
+
+Debe calcular:
+
+- subtotal
+- impuestos
+- total
+
+---
+
+# Épica 7: Pagos
+
+Permite registrar el pago de facturas.
+
+## HU-10 Registrar Pago
+
+**Como:** Operador  
+**Quiero:** registrar un pago  
+**Para:** confirmar el pago de una factura
+
+### Métodos de pago
+
+- Efectivo
+- Tarjeta
+- Transferencia
+- Nequi
+- Daviplata
+
+---
+
+# Épica 8: Auditoría
+
+Permite revisar la operación del sistema.
+
+## HU-11 Consultar Reportes
+
+**Como:** Auditor  
+**Quiero:** consultar reportes del sistema  
+**Para:** verificar la actividad
+
+### Criterios de aceptación
+
+Filtros disponibles:
+
+- fecha
+- estado de trabajos
+- estado de facturas
+- método de pago
+
+---
+
+# 4. Conclusión
+
+El Product Backlog permite organizar el desarrollo del sistema PrintLab mediante **épicas e historias de usuario**, facilitando la planificación del proyecto y la implementación iterativa bajo metodologías ágiles.
